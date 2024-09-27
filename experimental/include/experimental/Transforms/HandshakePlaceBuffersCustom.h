@@ -24,7 +24,8 @@ namespace buffer {
 
 std::unique_ptr<dynamatic::DynamaticPass> createHandshakePlaceBuffersCustom(
     const std::string &pred = "", const unsigned &outid = 1,
-    const unsigned &slots = 1, const std::string &type = "oehb");
+    const unsigned &slots = 1, const unsigned &data = 0,
+    const unsigned &valid = 0, const unsigned &ready = 0);
 
 #define GEN_PASS_DECL_HANDSHAKEPLACEBUFFERSCUSTOM
 #define GEN_PASS_DEF_HANDSHAKEPLACEBUFFERSCUSTOM

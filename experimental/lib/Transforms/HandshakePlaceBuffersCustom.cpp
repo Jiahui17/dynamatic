@@ -26,6 +26,7 @@
 #include "dynamatic/Dialect/Handshake/HandshakeAttributes.h"
 #include "dynamatic/Dialect/Handshake/HandshakeOps.h"
 #include "dynamatic/Support/CFG.h"
+#include "dynamatic/Support/Utils/Utils.h"
 #include "dynamatic/Transforms/HandshakeMaterialize.h"
 
 using namespace llvm;
@@ -41,11 +42,15 @@ struct HandshakePlaceBuffersCustomPass
 
   /// Trivial field-by-field constructor.
   HandshakePlaceBuffersCustomPass(const std::string &pred, const int &outid,
-                                  const int &slots, const std::string &type) {
+                                  const int &slots, const unsigned &data,
+                                  const unsigned &valid,
+                                  const unsigned &ready) {
     this->pred = pred;
     this->outid = outid;
     this->slots = slots;
-    this->type = type;
+    this->data = data;
+    this->valid = valid;
+    this->ready = ready;
   }
 
   /// Called on the MLIR module provided as input.
@@ -74,15 +79,24 @@ struct HandshakePlaceBuffersCustomPass
     // channel.
     Operation *succ = *channel.getUsers().begin();
     builder.setInsertionPoint(succ);
-    handshake::TimingInfo timing;
-    if (type == "oehb") {
-      timing = handshake::TimingInfo::oehb();
-    } else if (type == "tehb") {
-      timing = handshake::TimingInfo::tehb();
-    } else {
-      llvm::errs() << "Unknown buffer type: \"" << type << "\"!\n";
+
+    if (data != valid) {
+      llvm::errs() << "The data latency of a buffer(" << data
+                   << ") must be identical its "
+                      "valid latency ("
+                   << valid << ")!.";
       return signalPassFailure();
     }
+
+    if (slots == 0) {
+      llvm::errs() << "The number of slots must be at least 1!";
+      return signalPassFailure();
+    }
+
+    handshake::TimingInfo timing;
+    timing.setLatency(SignalType::DATA, data);
+    timing.setLatency(SignalType::VALID, valid);
+    timing.setLatency(SignalType::READY, ready);
     auto bufOp = builder.create<handshake::BufferOp>(channel.getLoc(), channel,
                                                      timing, slots);
     inheritBB(succ, bufOp);
@@ -95,7 +109,7 @@ struct HandshakePlaceBuffersCustomPass
 std::unique_ptr<dynamatic::DynamaticPass>
 dynamatic::experimental::buffer::createHandshakePlaceBuffersCustom(
     const std::string &pred, const unsigned &outid, const unsigned &slots,
-    const std::string &type) {
+    const unsigned &data, const unsigned &valid, const unsigned &ready) {
   return std::make_unique<HandshakePlaceBuffersCustomPass>(pred, outid, slots,
-                                                           type);
+                                                           data, valid, ready);
 }
