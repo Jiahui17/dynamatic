@@ -543,8 +543,11 @@ void HandshakePlaceBuffersPass::instantiateBuffers(BufferPlacement &placement) {
       if (numSlots == 0)
         return;
 
+      StringRef bufferType =
+          timing == TimingInfo::oehb() ? BufferOp::DV_TYPE : BufferOp::R_TYPE;
+
       auto bufOp = builder.create<handshake::BufferOp>(
-          bufferIn.getLoc(), bufferIn, timing, numSlots);
+          bufferIn.getLoc(), bufferIn, timing, numSlots, bufferType);
       inheritBB(opDst, bufOp);
       nameAnalysis.setName(bufOp);
 
