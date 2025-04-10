@@ -20,7 +20,7 @@ namespace dynamatic {
 namespace experimental {
 
 std::unique_ptr<DynamaticPass>
-createShrinkBitWidth(const unsigned &targetBitwidth = 8);
+createShrinkBitWidth(unsigned targetBitWidth = 7);
 
 #define GEN_PASS_DECL_CFSHRINKBITWIDTH
 #define GEN_PASS_DEF_CFSHRINKBITWIDTH

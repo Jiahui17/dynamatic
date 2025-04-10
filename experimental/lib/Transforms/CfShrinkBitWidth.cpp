@@ -16,8 +16,10 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/ArrayRef.h"
 #include <cstdint>
 
 using namespace mlir;
@@ -25,44 +27,88 @@ using namespace dynamatic;
 using namespace dynamatic::experimental;
 
 namespace {
-class ShrinkBitwidthPass
+class ShrinkBitWidthPass
     : public dynamatic::experimental::impl::CfShrinkBitWidthBase<
-          ShrinkBitwidthPass> {
-  unsigned targetBitwidth;
+          ShrinkBitWidthPass> {
+
+  int64_t clipValue(int64_t val) {
+    int64_t maxValue = (1 << targetBitWidth) - 1;
+    if (val > maxValue)
+      return maxValue;
+    return val;
+  }
+
+  // Helper function
+  Type shrinkType(Type ty, MLIRContext *ctx) {
+    Builder builder(ctx);
+
+    if (auto intType = ty.dyn_cast<IntegerType>()) {
+      if (intType.getWidth() > targetBitWidth)
+        return builder.getIntegerType(targetBitWidth);
+    }
+
+    if (auto memrefType = ty.dyn_cast<MemRefType>()) {
+      auto newElemType = shrinkType(memrefType.getElementType(), ctx);
+      if (newElemType != memrefType.getElementType()) {
+
+        SmallVector<int64_t, 4> newShape;
+        assert(memrefType.getShape().size() == 1 &&
+               "We assume that Dynamatic has flattened the array shape");
+        for (int64_t dim : memrefType.getShape()) {
+          newShape.push_back(clipValue(dim));
+        }
+
+        ArrayRef<int64_t> newShapeRef = newShape;
+
+        return MemRefType::get(newShapeRef, newElemType, memrefType.getLayout(),
+                               memrefType.getMemorySpace());
+      }
+    }
+    return ty;
+  }
 
 public:
-  ShrinkBitwidthPass(const unsigned &targetBitwidth)
-      : targetBitwidth(targetBitwidth) {}
-
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ShrinkBitwidthPass)
-
-  StringRef getArgument() const final { return "shrink-bitwidth"; }
-  StringRef getDescription() const final {
-    return "Shrink bitwidth of ops and arguments";
+  ShrinkBitWidthPass(unsigned targetBitWidth) {
+    this->targetBitWidth = targetBitWidth;
   }
 
   void runDynamaticPass() override {
     ModuleOp module = getOperation();
     Builder builder(module.getContext());
+    MLIRContext *ctx = &getContext();
 
     module.walk([&](Operation *op) {
       // Update result types
       for (auto result : op->getResults()) {
-        if (auto intType = result.getType().dyn_cast<IntegerType>()) {
-          if (intType.getWidth() > targetBitwidth) {
-            result.setType(builder.getIntegerType(targetBitwidth));
-          }
+        result.setType(shrinkType(result.getType(), ctx));
+      }
+
+      if (auto load = dyn_cast<memref::LoadOp>(op)) {
+        auto memref = load.getMemRef();
+        auto newType = shrinkType(memref.getType(), ctx);
+        if (newType != memref.getType()) {
+          memref.setType(newType);
+        }
+      }
+
+      if (auto store = dyn_cast<memref::StoreOp>(op)) {
+        auto memref = store.getMemRef();
+        auto newType = shrinkType(memref.getType(), ctx);
+        if (newType != memref.getType()) {
+          memref.setType(newType);
         }
       }
 
       // Clip integer constants
-      int64_t maxValue = (1 << targetBitwidth) - 1;
       if (auto constOp = dyn_cast<arith::ConstantOp>(op)) {
+        if (constOp.getValue().getType() == builder.getIndexType()) {
+          return;
+        }
         if (auto intAttr = constOp.getValue().dyn_cast<IntegerAttr>()) {
+          llvm::errs() << "Constant: " << constOp.getValue() << "\n";
           int64_t val = intAttr.getInt();
-          int64_t clippedVal = val < maxValue ? val : maxValue;
           auto newAttr = builder.getIntegerAttr(
-              builder.getIntegerType(targetBitwidth), clippedVal);
+              builder.getIntegerType(targetBitWidth), clipValue(val));
           constOp.setValueAttr(newAttr);
         }
       }
@@ -70,27 +116,42 @@ public:
 
     // Update function arguments
     module.walk([&](func::FuncOp func) {
+      // Rewrite func signature
       auto funcType = func.getFunctionType();
-      SmallVector<Type, 4> newInputs;
-      for (Type ty : funcType.getInputs()) {
-        if (auto intType = ty.dyn_cast<IntegerType>()) {
-          if (intType.getWidth() > targetBitwidth)
-            newInputs.push_back(builder.getIntegerType(targetBitwidth));
-          else
-            newInputs.push_back(ty);
-        } else {
-          newInputs.push_back(ty);
+
+      SmallVector<Type> newInputs;
+      for (Type ty : funcType.getInputs())
+        newInputs.push_back(shrinkType(ty, ctx));
+
+      SmallVector<Type> newResults;
+      for (Type ty : funcType.getResults())
+        newResults.push_back(shrinkType(ty, ctx));
+
+      auto newFuncType = builder.getFunctionType(newInputs, newResults);
+      func.setType(newFuncType);
+
+      // Don't forget to update block argument types:
+      for (auto [arg, newTy] : llvm::zip(func.getArguments(), newInputs))
+        arg.setType(newTy);
+
+      for (Block &block : func.getBlocks()) {
+        for (BlockArgument arg : block.getArguments()) {
+          if (arg.getType().isIndex())
+            continue;
+
+          if (auto intType = arg.getType().dyn_cast<IntegerType>()) {
+            if (intType.getWidth() > targetBitWidth) {
+              arg.setType(builder.getIntegerType(targetBitWidth));
+            }
+          }
         }
       }
-      // if (funcType.getInputs() != newInputs) {
-      func.setType(builder.getFunctionType(newInputs, funcType.getResults()));
-      // }
     });
   }
 };
 } // end anonymous namespace
 
 std::unique_ptr<dynamatic::DynamaticPass>
-dynamatic::experimental::createShrinkBitWidth(const unsigned &targetBitwidth) {
-  return std::make_unique<ShrinkBitwidthPass>(targetBitwidth);
+dynamatic::experimental::createShrinkBitWidth(unsigned targetBitWidth) {
+  return std::make_unique<ShrinkBitWidthPass>(targetBitWidth);
 }
