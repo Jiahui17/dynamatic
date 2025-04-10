@@ -110,4 +110,15 @@ def HandshakeSizeLSQs : DynamaticPass<"handshake-size-lsqs"> {
       "Three different cases for memory collsions: none/half/full">];
 }
 
+
+def CfShrinkBitWidth : DynamaticPass<"cf-shrink-bit-width"> {
+  let summary = "Shrink the bitwidth of operations and constants in the CF dialect";
+  let description = [{}];
+  let constructor = "dynamatic::experimental::createShrinkBitWidth()";
+  let options = [
+    Option<"targetBitWidth", "target-bit-width", "unsigned", "", "target bit width of the operations">,
+  ];
+}
+
+
 #endif // EXPERIMENTAL_TRANSFORMS_PASSES_TD
