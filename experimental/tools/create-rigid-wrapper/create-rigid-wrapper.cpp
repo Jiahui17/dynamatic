@@ -115,9 +115,7 @@ void printInstantiation(hw::HWModuleOp modOp) {
 std::string formatSignalWidth(Type type) {
 
   if (auto channelType = dyn_cast<ChannelType>(type)) {
-    llvm::errs() << "!!Channel type: " << channelType << "\n";
     int width = channelType.getDataBitWidth();
-    llvm::errs() << "!!!Channel type: " << channelType << "\n";
     if (width == 1) {
       return "";
     }
@@ -131,13 +129,13 @@ std::string formatSignalWidth(Type type) {
     }
     return "[" + std::to_string(width - 1) + ":0]";
   }
-  llvm::errs() << "Unsupported type: " << type << "\n";
   return "";
 }
 
 void writeWrapper(hw::HWModuleOp modOp) {
 
-  llvm::outs() << "module " << modOp.getSymName() << "_rigid(\n";
+  // llvm::outs() << "module " << modOp.getSymName() << "_rigid(\n";
+  llvm::outs() << "module main(\n";
 
   // Iterate over input ports.
   for (auto [arg, portAttr] : llvm::zip_equal(
@@ -145,37 +143,27 @@ void writeWrapper(hw::HWModuleOp modOp) {
     if (isa<handshake::ChannelType>(arg.getType())) {
       llvm::outs() << "input " << formatSignalWidth(arg.getType())
                    << portAttr.str() << ",\n";
-      llvm::errs() << "Port type: " << arg.getType() << "\n";
-      llvm::errs() << "Port name: " << portAttr << "\n";
     } else if (isa<handshake::ControlType>(arg.getType())) {
-      llvm::errs() << "Port type: " << formatSignalWidth(arg.getType())
-                   << arg.getType() << "\n";
-      llvm::errs() << "Port name: " << portAttr << "\n";
     } else if (isa<IntegerType>(arg.getType())) {
       llvm::outs() << "input " << formatSignalWidth(arg.getType())
                    << portAttr.str() << ",\n";
     }
   }
-  llvm::outs() << "go,\n";
-  llvm::outs() << "clk,\n";
-  llvm::outs() << "rst,\n";
+  llvm::outs() << "input go,\n";
+  llvm::outs() << "input clk,\n";
+  llvm::outs() << "input rst,\n";
 
   for (auto [resType, portAttr] :
        llvm::zip_equal(modOp.getOutputTypes(), modOp.getOutputNamesStr())) {
     if (isa<handshake::ChannelType>(resType)) {
       llvm::outs() << "output " << formatSignalWidth(resType) << portAttr.str()
                    << ",\n";
-      llvm::errs() << "Port type: " << resType << "\n";
-      llvm::errs() << "Port name: " << portAttr << "\n";
     } else if (isa<handshake::ControlType>(resType)) {
-      llvm::errs() << "Port type: " << formatSignalWidth(resType) << resType
-                   << "\n";
-      llvm::errs() << "Port name: " << portAttr << "\n";
     } else if (isa<IntegerType>(resType)) {
       llvm::outs() << "output " << portAttr.str() << ",\n";
     }
   }
-  llvm::outs() << "done\n);\n";
+  llvm::outs() << "output done\n);\n";
 
   llvm::outs() << "// Internal signals\n";
 
@@ -224,12 +212,6 @@ void writeWrapper(hw::HWModuleOp modOp) {
   llvm::outs() << "assign done = " << llvm::join(outputFullFlags, " & ")
                << ";\n";
 
-  // // Iterate over output ports.
-  // for (auto &output : ports.outputs) {
-  //   llvm::StringRef name = output.getName(); // Port name.
-  //   mlir::Type type = output.type;           // Port type.
-  //   // Do something with output port.
-  // }
   printInstantiation(modOp);
   llvm::outs() << "endmodule\n";
 }
@@ -246,8 +228,6 @@ int main(int argc, char **argv) {
 
   auto fileOrErr = MemoryBuffer::getFileOrSTDIN(inputFilename.c_str());
   if (std::error_code error = fileOrErr.getError()) {
-    llvm::errs() << argv[0] << ": could not open input file '" << inputFilename
-                 << "': " << error.message() << "\n";
     return 1;
   }
 
@@ -262,5 +242,6 @@ int main(int argc, char **argv) {
   // Write each module's RTL implementation to a separate file
   for (hw::HWModuleOp hwModOp : modOp->getOps<hw::HWModuleOp>()) {
     writeWrapper(hwModOp);
+    return 0;
   }
 }
