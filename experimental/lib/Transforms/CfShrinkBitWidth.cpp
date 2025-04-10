@@ -101,15 +101,17 @@ public:
 
       // Clip integer constants
       if (auto constOp = dyn_cast<arith::ConstantOp>(op)) {
-        if (constOp.getValue().getType() == builder.getIndexType()) {
-          return;
-        }
         if (auto intAttr = constOp.getValue().dyn_cast<IntegerAttr>()) {
-          llvm::errs() << "Constant: " << constOp.getValue() << "\n";
-          int64_t val = intAttr.getInt();
-          auto newAttr = builder.getIntegerAttr(
-              builder.getIntegerType(targetBitWidth), clipValue(val));
-          constOp.setValueAttr(newAttr);
+          if (constOp.getValue().getType() == builder.getIndexType()) {
+            int64_t val = intAttr.getInt();
+            auto newAttr = builder.getIndexAttr(clipValue(val));
+            constOp.setValueAttr(newAttr);
+          } else {
+            int64_t val = intAttr.getInt();
+            auto newAttr = builder.getIntegerAttr(
+                builder.getIntegerType(targetBitWidth), clipValue(val));
+            constOp.setValueAttr(newAttr);
+          }
         }
       }
     });
