@@ -94,11 +94,14 @@ exit_on_fail "Failed to run memory analysis" "Ran memory analysis"
 exit_on_fail "Failed to compile affine to scf" "Compiled affine to scf"
 
 # scf level -> cf level
-"$DYNAMATIC_OPT_BIN" "$F_SCF" --lower-scf-to-cf > "$F_CF"
+"$DYNAMATIC_OPT_BIN" "$F_SCF" \
+    --lower-scf-to-cf > "$F_CF"
 exit_on_fail "Failed to compile scf to cf" "Compiled scf to cf"
 
 # cf transformations (standard)
-"$DYNAMATIC_OPT_BIN" "$F_CF" --canonicalize --cse --sccp --symbol-dce \
+"$DYNAMATIC_OPT_BIN" "$F_CF" \
+    --cf-shrink-bit-width="target-bit-width=3" \
+    --canonicalize --cse --sccp --symbol-dce \
     --control-flow-sink --loop-invariant-code-motion --canonicalize \
     > "$F_CF_TRANFORMED"
 exit_on_fail "Failed to apply standard transformations to cf" \
