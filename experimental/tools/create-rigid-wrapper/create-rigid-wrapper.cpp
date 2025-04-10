@@ -198,7 +198,7 @@ void writeWrapper(hw::HWModuleOp modOp) {
       llvm::outs() << "  if (rst) begin\n";
       llvm::outs() << "    " << portAttr.str() << "_full <= 0;\n";
       llvm::outs() << "  end else begin\n";
-      llvm::outs() << "    if (" << portAttr.str() << "_valid & go) begin\n";
+      llvm::outs() << "    if (" << portAttr.str() << "_valid) begin\n";
       llvm::outs() << "      " << portAttr.str() << "_full <= 1;\n";
       llvm::outs() << "    end\n";
       llvm::outs() << "  end\n";
