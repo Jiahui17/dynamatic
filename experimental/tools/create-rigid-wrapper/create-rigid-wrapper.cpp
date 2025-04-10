@@ -13,14 +13,10 @@
 //===----------------------------------------------------------------------===//
 #include "dynamatic/Conversion/HandshakeToHW.h"
 #include "dynamatic/Dialect/HW/HWDialect.h"
-#include "dynamatic/Dialect/HW/HWOpInterfaces.h"
 #include "dynamatic/Dialect/HW/HWOps.h"
 #include "dynamatic/Dialect/Handshake/HandshakeDialect.h"
 #include "dynamatic/Dialect/Handshake/HandshakeTypes.h"
 #include "dynamatic/Support/LLVM.h"
-#include "dynamatic/Support/RTL/RTL.h"
-#include "dynamatic/Support/System.h"
-#include "dynamatic/Support/Utils/Utils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
@@ -29,17 +25,11 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/IndentedOstream.h"
 #include "mlir/Support/LLVM.h"
-#include "mlir/Support/LogicalResult.h"
-#include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
-#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
@@ -99,12 +89,12 @@ void printInstantiation(hw::HWModuleOp modOp) {
       llvm::outs() << "." << portAttr.str() << "_valid(" << portAttr.str()
                    << "_valid"
                    << "),\n";
-      llvm::outs() << "." << portAttr.str() << "_ready(1)";
+      llvm::outs() << "." << portAttr.str() << "_ready(1'b1)";
     } else if (isa<handshake::ControlType>(resType)) {
       llvm::outs() << "." << portAttr.str() << "_valid(" << portAttr.str()
                    << "_valid"
                    << "),\n";
-      llvm::outs() << "." << portAttr.str() << "_ready(1)";
+      llvm::outs() << "." << portAttr.str() << "_ready(1'b1)";
     } else if (isa<IntegerType>(resType)) {
       llvm::outs() << "." << portAttr.str() << "(" << portAttr.str() << ")";
     }
@@ -150,8 +140,6 @@ void writeWrapper(hw::HWModuleOp modOp) {
     }
   }
   llvm::outs() << "input go,\n";
-  llvm::outs() << "input clk,\n";
-  llvm::outs() << "input rst,\n";
 
   for (auto [resType, portAttr] :
        llvm::zip_equal(modOp.getOutputTypes(), modOp.getOutputNamesStr())) {
@@ -160,7 +148,8 @@ void writeWrapper(hw::HWModuleOp modOp) {
                    << ",\n";
     } else if (isa<handshake::ControlType>(resType)) {
     } else if (isa<IntegerType>(resType)) {
-      llvm::outs() << "output " << portAttr.str() << ",\n";
+      llvm::outs() << "output " << formatSignalWidth(resType) << portAttr.str()
+                   << ",\n";
     }
   }
   llvm::outs() << "output done\n);\n";
