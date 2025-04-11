@@ -58,7 +58,7 @@ module mem_controller_loadless #(
   wire allRequestsDone;
 
   // Local Parameter
-  localparam [WIDTH_COUNTER_PENDING_STORES-1:0] zeroStore = WIDTH_COUNTER_PENDING_STORES'b0;
+  localparam [WIDTH_COUNTER_PENDING_STORES-1:0] zeroStore = {WIDTH_COUNTER_PENDING_STORES{1'b0}};
   localparam [NUM_CONTROLS-1:0] zeroCtrl = {NUM_CONTROLS{1'b0}};
 
   assign loadEn   = 0;
@@ -91,12 +91,12 @@ module mem_controller_loadless #(
   assign ctrl_ready   = {NUM_CONTROLS{1'b1}};
 
   integer          i;
-  reg     [WIDTH_COUNTER_PENDING_STORES-1 : 0] counter = WIDTH_COUNTER_PENDING_STORES'd0;
+  reg     [WIDTH_COUNTER_PENDING_STORES-1 : 0] counter = {WIDTH_COUNTER_PENDING_STORES{1'd0}};
 
   // Counting Stores
   always @(posedge clk) begin
     if (rst) begin
-      counter = WIDTH_COUNTER_PENDING_STORES'd0;
+      counter = {WIDTH_COUNTER_PENDING_STORES{1'd0}};
     end else begin
       for (i = 0; i <= NUM_CONTROLS - 1; i = i + 1) begin
         if (ctrl_valid[i]) begin
