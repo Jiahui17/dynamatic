@@ -6,8 +6,8 @@
  * Web address: http://polybench.sourceforge.net
  */
 
-#include "kernel_2mm.h"
 #include "dynamatic/Integration.h"
+#include "kernel_2mm.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -16,17 +16,19 @@ void kernel_2mm(in_int_t alpha, in_int_t beta, inout_int_t tmp[NI][NJ],
                 inout_int_t D[NI][NL]) {
   for (unsigned i = 0; i < NI; i++) {
     for (unsigned j = 0; j < NJ; j++) {
-      tmp[i][j] = 0;
+      int acc = 0;
       for (unsigned k = 0; k < NK; ++k)
-        tmp[i][j] += alpha * A[i][k] * B[k][j];
+        acc += alpha * A[i][k] * B[k][j];
+      tmp[i][j] = acc;
     }
   }
 
   for (unsigned i = 0; i < NI; i++) {
     for (unsigned l = 0; l < NL; l++) {
-      D[i][l] *= beta;
+      int acc = D[i][l] * beta;
       for (unsigned k = 0; k < NJ; ++k)
-        D[i][l] += tmp[i][k] * C[k][l];
+        acc += tmp[i][k] * C[k][l];
+      D[i][l] = acc;
     }
   }
 }
