@@ -306,7 +306,7 @@ static LogicalResult getDOTGraph(handshake::FuncOp funcOp, DOTGraph &graph) {
     std::string prettyLabel;
     switch (labelType) {
     case LabelType::TYPE:
-      prettyLabel = getPrettyNodeLabel(op);
+      prettyLabel = getUniqueName(op);
       break;
     case LabelType::UNAME:
       prettyLabel = getUniqueName(op);
