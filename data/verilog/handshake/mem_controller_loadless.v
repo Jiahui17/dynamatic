@@ -45,7 +45,7 @@ module mem_controller_loadless #(
   // WIDTH_COUNTER_PENDING_STORES sets the number of maximum pending stores to
   // 2^WIDTH_COUNTER_PENDING_STORES - 1
   // TODO: We should be able configure this number to save resources.
-  localparam WIDTH_COUNTER_PENDING_STORES=4;
+  localparam WIDTH_COUNTER_PENDING_STORES=2;
 
   wire [WIDTH_COUNTER_PENDING_STORES-1 : 0] remainingStores;
   // Indicating the store interface port that there is a valid store request
