@@ -100,7 +100,7 @@ exit_on_fail "Failed to compile scf to cf" "Compiled scf to cf"
 
 # cf transformations (standard)
 "$DYNAMATIC_OPT_BIN" "$F_CF" \
-    --cf-shrink-bit-width="target-bit-width=3" \
+    --cf-shrink-bit-width="target-bit-width=4" \
     --canonicalize --cse --sccp --symbol-dce \
     --control-flow-sink --loop-invariant-code-motion --canonicalize \
     > "$F_CF_TRANFORMED"
@@ -110,7 +110,7 @@ exit_on_fail "Failed to apply standard transformations to cf" \
 # cf transformations (dynamatic)
 "$DYNAMATIC_OPT_BIN" "$F_CF_TRANFORMED" \
   --arith-reduce-strength="max-adder-depth-mul=1" --push-constants \
-  --mark-memory-interfaces \
+  --force-memory-interface="force-mc=true" \
   > "$F_CF_DYN_TRANSFORMED"
 exit_on_fail "Failed to apply Dynamatic transformations to cf" \
   "Applied Dynamatic transformations to cf"
@@ -122,7 +122,8 @@ exit_on_fail "Failed to compile cf to handshake" "Compiled cf to handshake"
 
 # handshake transformations
 "$DYNAMATIC_OPT_BIN" "$F_HANDSHAKE" \
-  --handshake-analyze-lsq-usage --handshake-replace-memory-interfaces \
+  --handshake-analyze-lsq-usage \
+  --handshake-replace-memory-interfaces \
   --handshake-minimize-cst-width --handshake-optimize-bitwidths \
   --handshake-materialize --handshake-infer-basic-blocks \
   > "$F_HANDSHAKE_TRANSFORMED"
