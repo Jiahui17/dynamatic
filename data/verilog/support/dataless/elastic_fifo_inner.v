@@ -12,7 +12,7 @@ module elastic_fifo_inner_dataless #(
 );
   wire ReadEn, WriteEn;
   reg [$clog2(NUM_SLOTS) - 1 : 0] Tail = 0, Head = 0;
-  reg Full = 0, Empty = 0, fifo_valid;
+  reg Full = 0, Empty = 1, fifo_valid;
 
   // Ready if there is space in the FIFO
   assign ins_ready = ~Full | outs_ready;
