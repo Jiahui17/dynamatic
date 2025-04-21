@@ -100,7 +100,6 @@ exit_on_fail "Failed to compile scf to cf" "Compiled scf to cf"
 
 # cf transformations (standard)
 "$DYNAMATIC_OPT_BIN" "$F_CF" \
-    --cf-shrink-bit-width="target-bit-width=4" \
     --canonicalize --cse --sccp --symbol-dce \
     --control-flow-sink --loop-invariant-code-motion --canonicalize \
     > "$F_CF_TRANFORMED"
