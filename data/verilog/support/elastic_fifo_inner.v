@@ -13,6 +13,7 @@ module elastic_fifo_inner #(
   output outs_valid,
   output ins_ready
 );
+
   // Internal Signal Definition
   wire ReadEn, WriteEn;
   reg [$clog2(NUM_SLOTS) - 1 : 0] Tail = 0, Head = 0;
@@ -21,12 +22,12 @@ module elastic_fifo_inner #(
   integer i;
   
   // Ready if there is space in the FIFO
-  assign ins_ready = ~Full | outs_ready;
+  assign ins_ready = !Full || outs_ready;
 
   // Read if next can accept and there is sth in FIFO to read
-  assign ReadEn = (outs_ready & ~Empty);
+  assign ReadEn = (outs_ready && !Empty);
   assign outs_valid = ~Empty;
-  assign WriteEn = ins_valid & (~Full | outs_ready);
+  assign WriteEn = ins_valid & (!Full || outs_ready);
   assign outs = Memory[Head];
 
   // Initialize memory content
@@ -38,7 +39,9 @@ module elastic_fifo_inner #(
 
   always @(posedge clk) begin
     if (rst) begin
-      
+     for (i=0; i<NUM_SLOTS; i=i+1) begin
+        Memory[i] <= 0;
+     end
     end else if (WriteEn) begin
       Memory[Tail] <= ins;
     end
@@ -50,7 +53,18 @@ module elastic_fifo_inner #(
       Tail <= 0;
     end else begin
       if (WriteEn) begin
-        Tail <= (Tail + 1) % NUM_SLOTS;
+        // This simulates the behavior of "Tail <= (Tail + 1) % NUM_SLOTS;".
+        // The reminder operator might be handled differently (and also
+        // incorrectly) in different synthesis tools.
+
+        // Here and below: Appending Tail to 32 bits ("{{31{1'b0}}, Tail} ==
+        // NUM_SLOTS - 1") to fix Verilator's linter warning: "Tail" is a 1-bit
+        // signal, but "NUM_SLOTS - 1" is a 32-bit number.
+        if ({{31{1'b0}}, Tail} == NUM_SLOTS - 1) begin
+          Tail <= 0;
+        end else begin
+          Tail <= Tail + 1;
+        end
       end
     end  
   end
@@ -61,7 +75,14 @@ module elastic_fifo_inner #(
       Head <= 0;
     end else begin
       if (ReadEn) begin
-        Head <= (Head + 1) % NUM_SLOTS;
+        // This simulates the behavior of "Head <= (Head + 1) % NUM_SLOTS;".
+        // The reminder operator might be handled differently (and also
+        // incorrectly) in different synthesis tools.
+        if ({{31{1'b0}}, Head} == NUM_SLOTS - 1) begin
+          Head <= 0;
+        end else begin
+          Head <= Head + 1;
+        end
       end
     end 
   end
@@ -72,12 +93,12 @@ module elastic_fifo_inner #(
       Full <= 0;
     end else begin
       // If only filling but not emptying
-      if (WriteEn & ~ReadEn) begin
-        // If new tail index will reach head index
-        if ((Tail + 1) % NUM_SLOTS == Head) begin
-          Full <= 1;
+      if (WriteEn && !ReadEn) begin
+        // If the new tail index will reach head index, the FIFO is full.
+        if ((({{31{1'b0}}, Tail} == NUM_SLOTS - 1) && (Head == 0)) || ((Tail + 1) == Head)) begin
+            Full <= 1;
         end
-      end else if (~WriteEn & ReadEn) begin
+      end else if (!WriteEn && ReadEn) begin
         // if only emptying but not filling
         Full <= 0;
       end
@@ -90,11 +111,12 @@ module elastic_fifo_inner #(
       Empty <= 1;
     end else begin
       // If only emptying but not filling
-      if (~WriteEn & ReadEn) begin
-        if ((Head + 1) % NUM_SLOTS == Tail) begin
+      if (!WriteEn && ReadEn) begin
+        // If the new head index will reach tail index, the FIFO is empty.
+        if (({{31{1'b0}}, Head} == (NUM_SLOTS - 1) && (Tail == 0)) || ((Head + 1) == Tail)) begin
           Empty <= 1;
         end
-      end else if (WriteEn & ~ReadEn) begin
+      end else if (WriteEn && !ReadEn) begin
         // If only filling but not emptying
         Empty <= 0;
       end
