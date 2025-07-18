@@ -30,13 +30,9 @@ RIGIDIFICATION_SH="$DYNAMATIC_DIR/experimental/tools/rigidification/rigidificati
 
 # Generated directories/files
 COMP_DIR="$OUTPUT_DIR/comp"
-F_AFFINE="$COMP_DIR/affine.mlir"
-F_AFFINE_MEM="$COMP_DIR/affine_mem.mlir"
-F_SCF="$COMP_DIR/scf.mlir"
 F_CF="$COMP_DIR/cf.mlir"
-F_CF_TRANSFORMED="$COMP_DIR/cf_transformed.mlir"
-F_CF_DYN_TRANSFORMED="$COMP_DIR/cf_dyn_transformed.mlir"
-F_CF_DYN_TRANSFORMED_MEM_DEP_MARKED="$COMP_DIR/cf_dyn_transformed_mem_dep_marked.mlir"
+F_CF_MEM="$COMP_DIR/cf_mem.mlir"
+F_CF_MEM_INTERFACE_MARKED="$COMP_DIR/cf_mem_interface_marked.mlir"
 F_PROFILER_BIN="$COMP_DIR/$KERNEL_NAME-profile"
 F_PROFILER_INPUTS="$COMP_DIR/profiler-inputs.txt"
 F_HANDSHAKE="$COMP_DIR/handshake.mlir"
@@ -95,63 +91,35 @@ export_cfg() {
 # Reset output directory
 rm -rf "$COMP_DIR" && mkdir -p "$COMP_DIR"
 
-# source -> affine level
-"$POLYGEIST_CLANG_BIN" "$SRC_DIR/$KERNEL_NAME.c" --function="$KERNEL_NAME" \
-  -I "$POLYGEIST_PATH/llvm-project/clang/lib/Headers" \
-  -I "$DYNAMATIC_DIR/include" \
-  -S -O3 --memref-fullrank --raise-scf-to-affine \
-  > "$F_AFFINE"
-exit_on_fail "Failed to compile source to affine" "Compiled source to affine"
+# Produces "out/comp/cf.mlir"
+bash "$DYNAMATIC_DIR/tools/frontend/llvm-cf.sh" \
+  "$DYNAMATIC_DIR" \
+  "$COMP_DIR" \
+  "$SRC_DIR/$KERNEL_NAME.c" \
+  "$KERNEL_NAME"
+exit_on_fail "Failed to compile C to cf" "Compiled C to cf"
 
-# affine level -> pre-processing and memory analysis
-"$DYNAMATIC_OPT_BIN" "$F_AFFINE" --allow-unregistered-dialect \
-  --remove-polygeist-attributes \
-  --func-set-arg-names="source=$SRC_DIR/$KERNEL_NAME.c" \
+"$DYNAMATIC_OPT_BIN" "$F_CF" \
   --mark-memory-dependencies \
-  > "$F_AFFINE_MEM"
-exit_on_fail "Failed to run memory analysis" "Ran memory analysis"
-
-# affine level -> scf level
-"$DYNAMATIC_OPT_BIN" "$F_AFFINE_MEM" --lower-affine-to-scf \
-  --flatten-memref-row-major --scf-simple-if-to-select \
-  --scf-rotate-for-loops \
-  > "$F_SCF"
-exit_on_fail "Failed to compile affine to scf" "Compiled affine to scf"
-
-# scf level -> cf level
-"$DYNAMATIC_OPT_BIN" "$F_SCF" --lower-scf-to-cf > "$F_CF"
-exit_on_fail "Failed to compile scf to cf" "Compiled scf to cf"
-
-# cf transformations (standard)
-"$DYNAMATIC_OPT_BIN" "$F_CF" --canonicalize --cse --sccp --symbol-dce \
-    --control-flow-sink --loop-invariant-code-motion --canonicalize \
-    > "$F_CF_TRANSFORMED"
-exit_on_fail "Failed to apply standard transformations to cf" \
-  "Applied standard transformations to cf"
-
-# cf transformations (dynamatic)
-"$DYNAMATIC_OPT_BIN" "$F_CF_TRANSFORMED" \
-    --arith-reduce-strength="max-adder-depth-mul=1" --push-constants \
-    > "$F_CF_DYN_TRANSFORMED"
-  exit_on_fail "Failed to apply Dynamatic transformations to cf" \
-    "Applied Dynamatic transformations to cf"
+  > "$F_CF_MEM"
+exit_on_fail "Failed to mark memory dependency" "Memory dependency marked"
 
 if [[ $DISABLE_LSQ -ne 0 ]]; then
-  "$DYNAMATIC_OPT_BIN" "$F_CF_DYN_TRANSFORMED" \
+  "$DYNAMATIC_OPT_BIN" "$F_CF_MEM" \
     --force-memory-interface="force-mc=true" \
-    > "$F_CF_DYN_TRANSFORMED_MEM_DEP_MARKED"
+    > "$F_CF_MEM_INTERFACE_MARKED"
   exit_on_fail "Failed to force usage of MC interface" \
     "Forced usage of MC interface in cf"
 else
-  "$DYNAMATIC_OPT_BIN" "$F_CF_DYN_TRANSFORMED" \
+  "$DYNAMATIC_OPT_BIN" "$F_CF_MEM" \
     --mark-memory-interfaces \
-    > "$F_CF_DYN_TRANSFORMED_MEM_DEP_MARKED"
+    > "$F_CF_MEM_INTERFACE_MARKED"
   exit_on_fail "Failed to mark memory interfaces in cf" \
     "Marked memory accesses with the corresponding interfaces in cf"
 fi
 
 # cf level -> handshake level
-"$DYNAMATIC_OPT_BIN" "$F_CF_DYN_TRANSFORMED_MEM_DEP_MARKED" --lower-cf-to-handshake \
+"$DYNAMATIC_OPT_BIN" "$F_CF_MEM_INTERFACE_MARKED" --lower-cf-to-handshake \
   > "$F_HANDSHAKE"
 exit_on_fail "Failed to compile cf to handshake" "Compiled cf to handshake"
 
@@ -192,7 +160,7 @@ else
   exit_on_fail "Failed to kernel for profiling" "Ran kernel for profiling"
 
   # cf-level profiler
-  "$DYNAMATIC_PROFILER_BIN" "$F_CF_DYN_TRANSFORMED" \
+  "$DYNAMATIC_PROFILER_BIN" "$F_CF_MEM" \
     --top-level-function="$KERNEL_NAME" --input-args-file="$F_PROFILER_INPUTS" \
     > $F_FREQUENCIES
   exit_on_fail "Failed to profile cf-level" "Profiled cf-level"
@@ -217,7 +185,7 @@ exit_on_fail "Failed to canonicalize Handshake" "Canonicalized handshake"
 
 # Export to DOT
 export_dot "$F_HANDSHAKE_EXPORT" "$KERNEL_NAME"
-export_cfg "$F_CF_DYN_TRANSFORMED" "${KERNEL_NAME}_CFG"
+export_cfg "$F_CF_MEM" "${KERNEL_NAME}_CFG"
 
 if [[ $USE_RIGIDIFICATION -ne 0 ]]; then
   # rigidification
