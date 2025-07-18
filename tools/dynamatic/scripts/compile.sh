@@ -99,8 +99,10 @@ bash "$DYNAMATIC_DIR/tools/frontend/llvm-cf.sh" \
   "$KERNEL_NAME"
 exit_on_fail "Failed to compile C to cf" "Compiled C to cf"
 
+# Remark: without --push-constants the BB tagging will break
 "$DYNAMATIC_OPT_BIN" "$F_CF" \
   --flatten-memref-row-major \
+  --arith-reduce-strength="max-adder-depth-mul=1" --push-constants \
   --mark-memory-dependencies \
   > "$F_CF_MEM"
 exit_on_fail "Failed to mark memory dependency" "Memory dependency marked"
