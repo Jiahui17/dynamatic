@@ -100,6 +100,7 @@ bash "$DYNAMATIC_DIR/tools/frontend/llvm-cf.sh" \
 exit_on_fail "Failed to compile C to cf" "Compiled C to cf"
 
 "$DYNAMATIC_OPT_BIN" "$F_CF" \
+  --flatten-memref-row-major \
   --mark-memory-dependencies \
   > "$F_CF_MEM"
 exit_on_fail "Failed to mark memory dependency" "Memory dependency marked"
