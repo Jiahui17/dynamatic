@@ -43,6 +43,8 @@
 #include <optional>
 #include <string>
 
+#include "dynamatic/Analysis/NameAnalysis.h"
+
 using namespace llvm;
 using namespace mlir;
 using namespace dynamatic;
@@ -61,10 +63,10 @@ struct UnserializedLoadStoreMetaData {
   Instruction *llvmInstr;
 
   // Metadata that holds the ID of the operation
-  int32_t id;
+  std::string name;
 
   // The IDs of the destinations of the dependency edges.
-  std::vector<int32_t> destinations;
+  std::vector<std::string> destinations;
 };
 
 namespace {
@@ -78,8 +80,8 @@ struct LLVMMetadataToAttributePass
 };
 } // namespace
 
-unsigned getMemId(Instruction *instr) {
-  auto *nameMetaData = instr->getMetadata("mem.op");
+std::string getMemId(Instruction *instr) {
+  auto *nameMetaData = instr->getMetadata(NameAnalysis::ATTR_NAME);
   assert(nameMetaData);
   llvm::Metadata *data =
       llvm::dyn_cast<llvm::MDString>(nameMetaData->getOperand(0));
@@ -88,25 +90,25 @@ unsigned getMemId(Instruction *instr) {
   assert(strData);
   // It's a metadata string
   UnserializedLoadStoreMetaData item;
-  return std::stoi(strData->getString().str());
+  return strData->getString().str();
 }
 
-std::vector<int32_t> getDestOps(Instruction *instr) {
+std::vector<std::string> getDestOps(Instruction *instr) {
   auto *nameMetaData = instr->getMetadata("dest.ops");
 
   if (!nameMetaData) {
     return {};
   }
 
-  std::vector<int32_t> destOps;
+  std::vector<std::string> destOps;
 
-  for (int i = 0; i < nameMetaData->getNumOperands(); i++) {
+  for (unsigned int i = 0; i < nameMetaData->getNumOperands(); ++i) {
 
     llvm::Metadata *op = nameMetaData->getOperand(i);
 
     if (llvm::MDString *mds = llvm::dyn_cast<llvm::MDString>(op)) {
       // It's a metadata string
-      destOps.push_back(std::stoi(mds->getString().str()));
+      destOps.push_back(mds->getString().str());
     }
   }
 
@@ -122,14 +124,14 @@ retriveLoadStoreAnalysisDataFromMetaData(Function &f) {
       if (llvm::LoadInst *loadInstr = llvm::dyn_cast<llvm::LoadInst>(&instr)) {
         UnserializedLoadStoreMetaData item;
         item.llvmInstr = &instr;
-        item.id = getMemId(loadInstr);
+        item.name = getMemId(loadInstr);
         item.destinations = getDestOps(loadInstr);
         items.push_back(item);
       } else if (llvm::StoreInst *storeInstr =
                      llvm::dyn_cast<llvm::StoreInst>(&instr)) {
         UnserializedLoadStoreMetaData item;
         item.llvmInstr = &instr;
-        item.id = getMemId(storeInstr);
+        item.name = getMemId(storeInstr);
         item.destinations = getDestOps(storeInstr);
         items.push_back(item);
       }
@@ -166,24 +168,16 @@ LogicalResult nameAndMarkDependencyEdges(
   for (auto [op, data] : llvm::zip_equal(loadStoreOperations, loadStoreData)) {
     // Assign the operations using the natual handshake names. TODO: maybe we
     // separate the naming for loads and stores?
-    std::string opName;
-    if (isa<LLVM::LoadOp>(op)) {
-      opName = "load" + std::to_string(data.id);
-    } else {
-      opName = "store" + std::to_string(data.id);
-    }
+    std::string opName = data.name;
 
-    op->setAttr(StringRef("handshake.name"), builder.getStringAttr(opName));
+    op->setAttr(StringRef(NameAnalysis::ATTR_NAME),
+                builder.getStringAttr(opName));
 
     std::vector<StringRef> destNames;
 
+    destNames.reserve(data.destinations.size());
     for (auto id : data.destinations) {
-      auto *op = loadStoreOperations[id];
-      if (isa<LLVM::LoadOp>(op)) {
-        destNames.emplace_back("load" + std::to_string(id));
-      } else {
-        destNames.emplace_back("store" + std::to_string(id));
-      }
+      destNames.emplace_back(id);
     }
 
     op->setAttr(StringRef("mem.dest"),
