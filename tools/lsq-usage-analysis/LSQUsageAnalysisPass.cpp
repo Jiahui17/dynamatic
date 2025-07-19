@@ -20,8 +20,12 @@
 using namespace llvm;
 using namespace polly;
 
-const std::string MEMORY_OP_NAME = "mem.op";
-const std::string DEST_OPS_ID = "dest.ops";
+// We need to link against the MLIR library if we import this from NameAnalysis,
+// which is an overkill...
+const std::string HANDSHAKE_NAME = "handshake.name";
+const std::string DEST_NAMES = "dest.ops";
+
+namespace {
 
 class InstructionDependenceInfo {
 public:
@@ -42,8 +46,6 @@ public:
 private:
   const LoopInfo &loopInfo;
 };
-
-namespace {
 
 using Path = struct Path {
   std::vector<const BasicBlock *> blocks;
@@ -253,8 +255,6 @@ bool InstructionDependenceInfo::hasReverseDependency(const Instruction *iA,
 using instPairT = std::pair<Instruction *, Instruction *>;
 
 class ScopMeta {
-  Scop &s;
-  DominatorTree *dominatorTree;
   LoopInfo *loopInfo;
   InstructionDependenceInfo tdi;
 
@@ -402,10 +402,8 @@ class ScopMeta {
   }
 
 public:
-  ScopMeta(Scop &scop)
-      : s(scop), tdi(*scop.getLI()), ctx(isl::ctx(isl_ctx_alloc())) {
+  ScopMeta(Scop &scop) : tdi(*scop.getLI()), ctx(isl::ctx(isl_ctx_alloc())) {
     // ctx = isl::ctx(isl_ctx_alloc());
-    dominatorTree = scop.getDT();
     loopInfo = scop.getLI();
 
     /* Calculate scopMinDepth based on first scopStmt */
@@ -519,9 +517,6 @@ public:
           wrInstMap = getMap(wrInst, 0, false);
           instMap = getMap(inst, 0, false);
         }
-        // DEBUG(dbgs() << "Trying intersection of \n"
-        //              << *WrInst << " : " << WrInstMap.to_str() << "\nwith \n"
-        //              << *Inst << " : " << InstMap.to_str() << "\n");
 
         isl::map intersect = instMap.intersect(wrInstMap);
         if (intersect.is_empty().is_false()) {
@@ -659,64 +654,6 @@ using LSQset = struct LSQset {
   iterator end() { return insts.end(); }
 };
 
-struct MemElemInfo {
-
-  MemElemInfo() = default;
-  ~MemElemInfo() = default;
-
-  /// Returns a set of references to LSQsets, each of which contains those
-  /// instructions whose hardware components should be connected to the same
-  /// LSQ
-  const std::set<LSQset *> &getLSQList() const { return lsqList; }
-
-  /// Returns a reference to the LSQset containing
-  const LSQset &getInstLSQ(Instruction *inst) const {
-    return *instToLSQ.at(inst);
-  }
-
-  /// To query whetherB B needs to be connected to any LSQs
-  bool bbHasLSQ(BasicBlock *bb) const {
-    return bbToLsqs.find(bb) != bbToLsqs.end();
-  }
-
-  /// Get a set of LSQs to which the block connects
-  const std::set<LSQset *> &getBBLSQs(BasicBlock *bb) const {
-    return bbToLsqs.at(bb);
-  }
-
-  ///  Query whether the component forI needs to be connected to a LSQ
-  bool needsLSQ(Instruction *inst) const {
-    return (instToLSQ.find(inst) != instToLSQ.end());
-  }
-
-  std::set<LSQset *> lsqList;
-  std::map<Instruction *, LSQset *> instToLSQ;
-  std::map<Value *, LSQset *> baseToLSQ;
-  std::map<BasicBlock *, std::set<LSQset *>> bbToLsqs;
-  std::vector<Instruction *> otherInsts;
-
-  ///  List of instructions within some loop
-  std::vector<Instruction *> loopInstrSet;
-
-  void finalize() {
-    /* Make list of non-conflicting loop instructions */
-    for (auto *inst : loopInstrSet)
-      if (instToLSQ.find(inst) == instToLSQ.end())
-        otherInsts.push_back(inst);
-
-    /* Create mapping from BB to relevant LSQs */
-    for (auto it : instToLSQ) {
-      auto *bb = it.first->getParent();
-      auto *lsq = it.second;
-
-      /* std::map's [] operator will create an empty set
-       * if BBtoLSQ doesn't already contain BB */
-      auto &set = bbToLsqs[bb];
-      set.insert(lsq);
-    }
-  }
-};
-
 namespace {
 struct LSQUsageAnalysisPass : PassInfoMixin<LSQUsageAnalysisPass> {
 
@@ -737,10 +674,6 @@ struct LSQUsageAnalysisPass : PassInfoMixin<LSQUsageAnalysisPass> {
 
   IndexAnalysis indexAnalysis;
 
-  MemElemInfo mei;
-
-  void createSets(struct TLLMeta &lm);
-
   void processScop(Scop &s);
   void processLoop(Loop *l);
   PreservedAnalyses run(Function &f, FunctionAnalysisManager &fam);
@@ -750,40 +683,41 @@ struct LSQUsageAnalysisPass : PassInfoMixin<LSQUsageAnalysisPass> {
   AAManager::Result *aliasAnalysis;
 };
 
-std::map<Instruction *, unsigned> nameAllLoadStores(Function &f) {
+std::map<Instruction *, std::string> nameAllLoadStores(Function &f) {
   unsigned memCount = 0;
   llvm::LLVMContext &context = f.getContext();
 
-  std::map<Instruction *, unsigned> nameMapping;
+  std::map<Instruction *, std::string> nameMapping;
 
   for (llvm::BasicBlock &bb : f) {
     for (llvm::Instruction &instr : bb) {
       if (llvm::LoadInst *loadInstr = llvm::dyn_cast<llvm::LoadInst>(&instr)) {
+
+        std::string name = "load" + std::to_string(memCount);
+
         // Create a metadata string
-        llvm::MDString *mdStr =
-            llvm::MDString::get(context, std::to_string(memCount));
+        llvm::MDString *mdStr = llvm::MDString::get(context, name);
 
         // Create an MDNode containing the MDString
         // MDNode::get takes a context and an arrayref of llvm::Value*
         llvm::MDNode *md = llvm::MDNode::get(context, mdStr);
 
-        // Attach the metadata node with a unique kind ID (e.g., "my.load.id")
-        // You can define your own metadata kind IDs.
-        loadInstr->setMetadata(MEMORY_OP_NAME, md);
-        nameMapping[&instr] = memCount;
+        loadInstr->setMetadata(HANDSHAKE_NAME, md);
+        nameMapping[loadInstr] = name;
         memCount++;
       } else if (llvm::StoreInst *storeInstr =
                      llvm::dyn_cast<llvm::StoreInst>(&instr)) {
+
+        std::string name = "store" + std::to_string(memCount);
+
         // Create a metadata string
-        llvm::MDString *mdStr =
-            llvm::MDString::get(context, std::to_string(memCount));
+        llvm::MDString *mdStr = llvm::MDString::get(context, name);
 
         // Create an MDNode containing the MDString
         llvm::MDNode *md = llvm::MDNode::get(context, mdStr);
 
-        // Attach the metadata node with a unique kind ID (e.g., "my.store.id")
-        storeInstr->setMetadata(MEMORY_OP_NAME, md);
-        nameMapping[&instr] = memCount;
+        storeInstr->setMetadata(HANDSHAKE_NAME, md);
+        nameMapping[storeInstr] = name;
         memCount++;
       }
     }
@@ -824,11 +758,17 @@ PreservedAnalyses LSQUsageAnalysisPass::run(Function &f,
   auto nameMapping = nameAllLoadStores(f);
   llvm::LLVMContext &ctx = f.getContext();
 
-  std::map<Instruction *, std::vector<unsigned>>
+  std::map<Instruction *, std::vector<std::string /*names*/>>
       instrToListOfDependentDestinations;
 
   for (auto &meta : loopMetaInfos) {
     for (auto &[src, dst] : getDependencyPairs(meta)) {
+      // NOTE & TODO: Here the dependency pair might contain different pointers
+      // pointing to the same instruction. Need to investigate.
+      if (nameMapping.count(src) == 0) {
+        continue;
+      }
+      llvm::errs() << nameMapping[src] << " -> " << nameMapping[dst] << "\n";
       // Get the name meta data
       if (instrToListOfDependentDestinations.count(src) == 0) {
         instrToListOfDependentDestinations[src] = {nameMapping[dst]};
@@ -839,94 +779,25 @@ PreservedAnalyses LSQUsageAnalysisPass::run(Function &f,
   }
 
   for (auto [src, dests] : instrToListOfDependentDestinations) {
-    std::vector<llvm::Metadata *> mdVals;
-    for (auto id : dests) {
-      llvm::MDString *dstId = llvm::MDString::get(ctx, std::to_string(id));
-      mdVals.push_back(dstId);
+
+    SmallVector<llvm::Metadata *, 10> mdVals;
+    llvm::errs() << "Setting the attribute for " << nameMapping[src] << "\n";
+    for (const auto &name : dests) {
+      mdVals.push_back(MDString::get(ctx, name));
+      llvm::errs() << "to " << name << "\n";
     }
-    src->setMetadata(DEST_OPS_ID, llvm::MDNode::get(ctx, mdVals));
+    llvm::MDNode *destNamesNode = llvm::MDNode::get(ctx, ArrayRef(mdVals));
+    destNamesNode->dump();
+
+    src->setMetadata(DEST_NAMES, destNamesNode);
   }
 
-#if 0
-
-  for (auto &meta : loopMetaInfos)
-    createSets(meta);
-  /// Determine whether memory accessing instructions outside any loop must be
-  /// connected to an LSQ.
-  /// For instructions outside loops, they use LSQ connection if:
-  ///     1. LSQ already exists due to other loop instructions
-  ///     2. More than one access to the array outside loops
-  ///
-  std::multimap<Value *, Instruction *> instsByBase;
-  std::set<Value *> bases;
-  for (auto &bb : f) {
-    /* Ignore BBs within loops */
-    if (loopAnalysis.getLoopDepth(&bb) != 0)
-      continue;
-    for (auto &inst : bb) {
-      /* Ignore non-memory instructions */
-      if (!inst.mayReadOrWriteMemory())
-        continue;
-      // TODO: Hack: Ignore call instructions - How do I handle this?
-      if (isa<CallInst>(inst))
-        continue;
-
-      auto *base = findBase(&inst);
-      auto lsqIt = mei.baseToLSQ.find(base);
-
-      // If an LSQ has already been emitted for the given address base,
-      // add this instruction to the instructions connected to the LSQ
-      if (lsqIt != mei.baseToLSQ.end()) {
-        lsqIt->second->insts.insert(&inst);
-        mei.instToLSQ[&inst] = lsqIt->second;
-      } else {
-        /* Only accesses to arrays without LSQs already */
-        instsByBase.emplace(base, &inst);
-        bases.emplace(base);
-      }
-    }
-  }
-
-  /// LSQ emmission
-  for (auto *base : bases) {
-    if (instsByBase.count(base) > 1) {
-      auto *lsq = new LSQset(base);
-      auto range = instsByBase.equal_range(base);
-
-      for (auto i = range.first; i != range.second; ++i) {
-        auto *inst = i->second;
-        lsq->insts.insert(inst);
-        mei.instToLSQ[inst] = lsq;
-      }
-      mei.lsqList.insert(lsq);
-    }
-  }
-
-  mei.finalize();
-
-  llvm::LLVMContext &ctx = f.getContext();
-  errs() << "Dependence report for function: " << f.getName() << "\n";
-  unsigned id = 0;
-  for (auto *lsqSet : mei.getLSQList()) {
-    llvm::errs() << "Instructions in LSQ " << id << ":\n";
-    llvm::MDNode *groupMD = llvm::MDNode::get(
-        ctx, llvm::MDString::get(ctx, "group_" + std::to_string(id)));
-    for (auto *inst : lsqSet->insts) {
-      llvm::errs() << "Inst: " << inst << " ";
-      inst->setMetadata("lsq-group", groupMD);
-    }
-    llvm::errs() << "\n";
-    id += 1;
-  }
-#endif
   return PreservedAnalyses::all();
 }
 
 void LSQUsageAnalysisPass::processScop(Scop &s) {
 
   auto meta = ScopMeta(s);
-
-  scopeMetas.push_back(meta);
 
   for (auto &stmt : s) {
     auto *bb = stmt.getBasicBlock();
@@ -957,6 +828,8 @@ void LSQUsageAnalysisPass::processScop(Scop &s) {
     else
       indexAnalysis.instRAWlist.insert(pair);
   }
+
+  scopeMetas.push_back(meta);
 }
 
 void LSQUsageAnalysisPass::processLoop(Loop *l) {
@@ -973,11 +846,9 @@ void LSQUsageAnalysisPass::processLoop(Loop *l) {
       if (isa<CallInst>(&inst))
         continue;
 
-      mei.loopInstrSet.push_back(&inst);
-
-      if (inst.mayReadFromMemory())
+      if (isa<llvm::LoadInst>(inst))
         loopMetaData.rdInsts.insert(&inst);
-      if (inst.mayWriteToMemory())
+      if (isa<llvm::StoreInst>(inst))
         loopMetaData.wrInsts.insert(&inst);
 
       if (isInScop)
@@ -1028,20 +899,20 @@ LSQUsageAnalysisPass::getDependencyPairs(struct TLLMeta &lm) {
         intersectList.push_back(pair);
     }
     /* Find WAW dependencies */
-    for (auto *wrInst1 : wrInstrSet) {
-      if (wrInst1 == wrInst)
+    for (auto *secondWrInst : wrInstrSet) {
+      if (secondWrInst == wrInst)
         continue;
 
       /* Each base array is emitted as a separate RAM in the design. Two
        * instructions targetting differing base arrays can never depend */
-      if (!equalBase(wrInst, wrInst1))
+      if (!equalBase(wrInst, secondWrInst))
         continue;
 
-      auto pair = instPairT(wrInst1, wrInst);
-      auto pairRev = instPairT(wrInst, wrInst1);
+      auto pair = instPairT(secondWrInst, wrInst);
+      auto pairRev = instPairT(wrInst, secondWrInst);
       /*  If both instructions are in the same scop,
           use the result rom IndexAnalysis */
-      auto wr1It = lm.instToScop.find(wrInst1);
+      auto wr1It = lm.instToScop.find(secondWrInst);
       auto wrIt = lm.instToScop.find(wrInst);
       if (wr1It != lm.instToScop.end() && wrIt != lm.instToScop.end() &&
           wr1It->second == wrIt->second) {
@@ -1054,15 +925,16 @@ LSQUsageAnalysisPass::getDependencyPairs(struct TLLMeta &lm) {
         continue;
       }
 
-      /* Otherwise, use results from AA */
+      // Otherwise, use results from AA
       auto *storeInst0 = dyn_cast<StoreInst>(wrInst);
-      auto *storeInst1 = dyn_cast<StoreInst>(wrInst1);
+      auto *storeInst1 = dyn_cast<StoreInst>(secondWrInst);
 
       if (storeInst0 == nullptr || storeInst1 == nullptr) {
         llvm_unreachable("Expecting only Write-Write pairs of "
                          "instructions when locating WAW dependencies");
       }
 
+      // If they always or sometimes alias:
       if (aliasAnalysis->alias(MemoryLocation::get(storeInst0),
                                MemoryLocation::get(storeInst1)) !=
           AliasResult::NoAlias)
@@ -1071,122 +943,6 @@ LSQUsageAnalysisPass::getDependencyPairs(struct TLLMeta &lm) {
   }
 
   return intersectList;
-}
-
-void LSQUsageAnalysisPass::createSets(struct TLLMeta &lm) {
-  std::list<instPairT> intersectList;
-  auto rdInstrSet = lm.rdInsts;
-  auto wrInstrSet = lm.wrInsts;
-
-  for (auto *wrInst : wrInstrSet) {
-    /* Find RAW dependencies */
-    for (auto *rdInst : rdInstrSet) {
-      auto pair = instPairT(wrInst, rdInst);
-
-      /* Each base array is emitted as a separate RAM in the design. Two
-       * instructions targetting differing base arrays can never depend */
-      if (!equalBase(wrInst, rdInst))
-        continue;
-
-      /*  If both instructions are in the same scop,
-          use the result from IndexAnalysis */
-      auto rdIt = lm.instToScop.find(rdInst);
-      auto wrIt = lm.instToScop.find(wrInst);
-      if (rdIt != lm.instToScop.end() && wrIt != lm.instToScop.end() &&
-          rdIt->second == wrIt->second) {
-        if (indexAnalysis.getRAWlist().find(pair) !=
-            indexAnalysis.getRAWlist().end())
-          intersectList.push_back(pair);
-        continue;
-      }
-
-      /* Otherwise, use results from AA */
-      auto *li = dyn_cast<LoadInst>(rdInst);
-      auto *si = dyn_cast<StoreInst>(wrInst);
-
-      if (li == nullptr || si == nullptr) {
-        llvm_unreachable("Expecting only Read-Write pairs of "
-                         "instructions when locating RAW dependencies");
-      }
-
-      if (aliasAnalysis->alias(MemoryLocation::get(li),
-                               MemoryLocation::get(si)) != AliasResult::NoAlias)
-        intersectList.push_back(pair);
-    }
-    /* Find WAW dependencies */
-    for (auto *wrInst1 : wrInstrSet) {
-      if (wrInst1 == wrInst)
-        continue;
-
-      /* Each base array is emitted as a separate RAM in the design. Two
-       * instructions targetting differing base arrays can never depend */
-      if (!equalBase(wrInst, wrInst1))
-        continue;
-
-      auto pair = instPairT(wrInst1, wrInst);
-      auto pairRev = instPairT(wrInst, wrInst1);
-      /*  If both instructions are in the same scop,
-          use the result rom IndexAnalysis */
-      auto wr1It = lm.instToScop.find(wrInst1);
-      auto wrIt = lm.instToScop.find(wrInst);
-      if (wr1It != lm.instToScop.end() && wrIt != lm.instToScop.end() &&
-          wr1It->second == wrIt->second) {
-        if (indexAnalysis.getWAWlist().find(pair) !=
-            indexAnalysis.getWAWlist().end())
-          intersectList.push_back(pair);
-        else if (indexAnalysis.getWAWlist().find(pairRev) !=
-                 indexAnalysis.getWAWlist().end())
-          intersectList.push_back(pairRev);
-        continue;
-      }
-
-      /* Otherwise, use results from AA */
-      auto *storeInst0 = dyn_cast<StoreInst>(wrInst);
-      auto *storeInst1 = dyn_cast<StoreInst>(wrInst1);
-
-      if (storeInst0 == nullptr || storeInst1 == nullptr) {
-        llvm_unreachable("Expecting only Write-Write pairs of "
-                         "instructions when locating WAW dependencies");
-      }
-
-      if (aliasAnalysis->alias(MemoryLocation::get(storeInst0),
-                               MemoryLocation::get(storeInst1)) !=
-          AliasResult::NoAlias)
-        intersectList.push_back(pair);
-    }
-  }
-
-  /* Create sets from pairs of intersecting accesses such that
-   * both instructions of every pair end up in the same set */
-  for (auto instPair : intersectList) {
-    auto *lInst = instPair.first;
-    auto *rInst = instPair.second;
-
-    /* Find base array */
-    Value *base = findBase(lInst);
-    if (!equalBase(lInst, rInst)) {
-      llvm_unreachable("Must only emit LSQs for memory accesses "
-                       "targeting the same base arrays");
-    }
-
-    auto lsQit = mei.baseToLSQ.find(base);
-    LSQset *lsq;
-    if (lsQit == mei.baseToLSQ.end()) {
-      /* Create new LSQ */
-      lsq = new LSQset(base, lInst, rInst);
-      mei.lsqList.insert(lsq);
-      mei.baseToLSQ[base] = lsq;
-      assert(!mei.lsqList.empty());
-    } else {
-      /* Add instructions to existing LSQ */
-      lsq = lsQit->second;
-      /* Not checking for existence since this allows for a single access
-       * only */
-      lsq->insts.emplace(lInst);
-      lsq->insts.emplace(rInst);
-    }
-    mei.instToLSQ[lInst] = mei.instToLSQ[rInst] = lsq;
-  }
 }
 
 } // end anonymous namespace
