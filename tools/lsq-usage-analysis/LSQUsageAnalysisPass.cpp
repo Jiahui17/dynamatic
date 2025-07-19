@@ -254,7 +254,7 @@ bool InstructionDependenceInfo::hasReverseDependency(const Instruction *iA,
 
 using instPairT = std::pair<Instruction *, Instruction *>;
 
-class ScopMeta {
+class ScopMetaInfo {
   LoopInfo *loopInfo;
   InstructionDependenceInfo tdi;
 
@@ -402,7 +402,8 @@ class ScopMeta {
   }
 
 public:
-  ScopMeta(Scop &scop) : tdi(*scop.getLI()), ctx(isl::ctx(isl_ctx_alloc())) {
+  ScopMetaInfo(Scop &scop)
+      : tdi(*scop.getLI()), ctx(isl::ctx(isl_ctx_alloc())) {
     // ctx = isl::ctx(isl_ctx_alloc());
     loopInfo = scop.getLI();
 
@@ -413,7 +414,7 @@ public:
     assert(scopMinDepth > 0);
   }
 
-  ~ScopMeta() = default;
+  ~ScopMetaInfo() = default;
   /* Use addScopStmt() to add all ScopStmt's in a Scop. Then,
    * computeIntersections() and finally getIntersectionList() */
 
@@ -657,28 +658,24 @@ using LSQset = struct LSQset {
 namespace {
 struct LSQUsageAnalysisPass : PassInfoMixin<LSQUsageAnalysisPass> {
 
-  std::vector<ScopMeta> scopeMetas;
-
   /// Memory metadata for top-level loops
-  struct TLLMeta {
-    TLLMeta() = default;
-    ~TLLMeta() = default;
+  struct TopLevelLoopMetaInfo {
+    TopLevelLoopMetaInfo() = default;
+    ~TopLevelLoopMetaInfo() = default;
 
     std::set<Instruction *> rdInsts;
     std::set<Instruction *> wrInsts;
     std::map<Instruction *, int> instToScop;
   };
 
-  /// List of metadata for top-level loops
-  std::vector<struct TLLMeta> loopMetaInfos;
-
   IndexAnalysis indexAnalysis;
 
-  void processScop(Scop &s);
-  void processLoop(Loop *l);
+  void processScop(Scop &s, std::vector<ScopMetaInfo> &scopMeta);
+  void processLoop(Loop *l,
+                   std::vector<struct TopLevelLoopMetaInfo> &loopMetaInfos);
   PreservedAnalyses run(Function &f, FunctionAnalysisManager &fam);
 
-  std::vector<instPairT> getDependencyPairs(struct TLLMeta &lm);
+  std::vector<instPairT> getDependencyPairs(struct TopLevelLoopMetaInfo &lm);
 
   AAManager::Result *aliasAnalysis;
 };
@@ -703,7 +700,7 @@ std::map<Instruction *, std::string> nameAllLoadStores(Function &f) {
         llvm::MDNode *md = llvm::MDNode::get(context, mdStr);
 
         loadInstr->setMetadata(HANDSHAKE_NAME, md);
-        nameMapping[loadInstr] = name;
+        nameMapping[&instr] = name;
         memCount++;
       } else if (llvm::StoreInst *storeInstr =
                      llvm::dyn_cast<llvm::StoreInst>(&instr)) {
@@ -717,7 +714,7 @@ std::map<Instruction *, std::string> nameAllLoadStores(Function &f) {
         llvm::MDNode *md = llvm::MDNode::get(context, mdStr);
 
         storeInstr->setMetadata(HANDSHAKE_NAME, md);
-        nameMapping[storeInstr] = name;
+        nameMapping[&instr] = name;
         memCount++;
       }
     }
@@ -734,6 +731,10 @@ PreservedAnalyses LSQUsageAnalysisPass::run(Function &f,
 
   auto &loopAnalysis = fam.getResult<LoopAnalysis>(f);
 
+  std::vector<TopLevelLoopMetaInfo> loopMetaInfos;
+
+  std::vector<ScopMetaInfo> scopMetaInfos;
+
   aliasAnalysis = &fam.getResult<AAManager>(f);
 
   std::deque<Region *> rq;
@@ -742,7 +743,7 @@ PreservedAnalyses LSQUsageAnalysisPass::run(Function &f,
   Scop *s;
   for (Region *r : rq) {
     if ((s = scopInfoAnalysis.getScop(r)))
-      processScop(*s);
+      processScop(*s, scopMetaInfos);
   }
 
   /* Process loops according to AA */
@@ -752,7 +753,7 @@ PreservedAnalyses LSQUsageAnalysisPass::run(Function &f,
     if (loop->getLoopDepth() > 1)
       continue;
 
-    processLoop(loop);
+    processLoop(loop, loopMetaInfos);
   }
 
   auto nameMapping = nameAllLoadStores(f);
@@ -763,12 +764,7 @@ PreservedAnalyses LSQUsageAnalysisPass::run(Function &f,
 
   for (auto &meta : loopMetaInfos) {
     for (auto &[src, dst] : getDependencyPairs(meta)) {
-      // NOTE & TODO: Here the dependency pair might contain different pointers
-      // pointing to the same instruction. Need to investigate.
-      if (nameMapping.count(src) == 0) {
-        continue;
-      }
-      llvm::errs() << nameMapping[src] << " -> " << nameMapping[dst] << "\n";
+      assert(nameMapping.count(src) > 0 && "Unnamed load/store op!");
       // Get the name meta data
       if (instrToListOfDependentDestinations.count(src) == 0) {
         instrToListOfDependentDestinations[src] = {nameMapping[dst]};
@@ -781,10 +777,8 @@ PreservedAnalyses LSQUsageAnalysisPass::run(Function &f,
   for (auto [src, dests] : instrToListOfDependentDestinations) {
 
     SmallVector<llvm::Metadata *, 10> mdVals;
-    llvm::errs() << "Setting the attribute for " << nameMapping[src] << "\n";
     for (const auto &name : dests) {
       mdVals.push_back(MDString::get(ctx, name));
-      llvm::errs() << "to " << name << "\n";
     }
     llvm::MDNode *destNamesNode = llvm::MDNode::get(ctx, ArrayRef(mdVals));
     destNamesNode->dump();
@@ -795,14 +789,15 @@ PreservedAnalyses LSQUsageAnalysisPass::run(Function &f,
   return PreservedAnalyses::all();
 }
 
-void LSQUsageAnalysisPass::processScop(Scop &s) {
+void LSQUsageAnalysisPass::processScop(Scop &s,
+                                       std::vector<ScopMetaInfo> &scopMeta) {
 
-  auto meta = ScopMeta(s);
+  auto meta = ScopMetaInfo(s);
 
   for (auto &stmt : s) {
     auto *bb = stmt.getBasicBlock();
     indexAnalysis.bBlist.insert(bb);
-    indexAnalysis.bbToScopMap[bb] = scopeMetas.size();
+    indexAnalysis.bbToScopMap[bb] = scopMeta.size();
 
     if (!hasMemoryReadOrWrite(stmt))
       continue;
@@ -829,10 +824,12 @@ void LSQUsageAnalysisPass::processScop(Scop &s) {
       indexAnalysis.instRAWlist.insert(pair);
   }
 
-  scopeMetas.push_back(meta);
+  scopMeta.push_back(meta);
 }
 
-void LSQUsageAnalysisPass::processLoop(Loop *l) {
+void LSQUsageAnalysisPass::processLoop(
+    Loop *l, std::vector<struct TopLevelLoopMetaInfo> &loopMetaInfos) {
+
   loopMetaInfos.emplace_back();
   auto &loopMetaData = loopMetaInfos.back();
 
@@ -858,7 +855,7 @@ void LSQUsageAnalysisPass::processLoop(Loop *l) {
 }
 
 std::vector<instPairT>
-LSQUsageAnalysisPass::getDependencyPairs(struct TLLMeta &lm) {
+LSQUsageAnalysisPass::getDependencyPairs(struct TopLevelLoopMetaInfo &lm) {
   std::vector<instPairT> intersectList;
   auto rdInstrSet = lm.rdInsts;
   auto wrInstrSet = lm.wrInsts;
