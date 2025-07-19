@@ -53,11 +53,9 @@ using Path = struct Path {
 };
 
 bool inLoopLatches(const BasicBlock *bb, const std::set<Loop *> &loopSet) {
-  for (Loop *loop : loopSet)
-    if (loop->getLoopLatch() == bb) {
-      return true;
-    }
-  return false;
+
+  return std::any_of(loopSet.begin(), loopSet.end(),
+                     [&bb](Loop *loop) { return loop->getLoopLatch() == bb; });
 }
 
 bool tokenDepends(const Path &p, const Instruction *instA,
