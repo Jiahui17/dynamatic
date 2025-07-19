@@ -250,26 +250,26 @@ bool InstructionDependenceInfo::hasReverseDependency(const Instruction *iA,
   return tokenRevDepends(p, iB, ls);
 }
 
-using instPairT = std::pair<Instruction *, Instruction *>;
+using InstrPairType = std::pair<Instruction *, Instruction *>;
 
 class ScopMetaInfo {
   LoopInfo *loopInfo;
-  InstructionDependenceInfo tdi;
+  InstructionDependenceInfo instrDependenceInfo;
 
   int scopMinDepth;
   std::vector<Instruction *> memInsts;
   std::map<Instruction *, isl::map> instToCurrentMap;
   std::map<Instruction *, int> instToLoopDepth;
-  std::set<instPairT> intersections;
-  std::set<instPairT> nonIntersections;
+  std::set<InstrPairType> intersections;
+  std::set<InstrPairType> nonIntersections;
   std::map<Instruction *, Value *> instToBase;
   /* Each Minimized Scop has a separate context. This ensures that
    * trying to intersect maps for instructions from separate Scops
    * will raise an error */
   isl::ctx ctx;
   /* Used by the dependsInternal() function */
-  std::map<instPairT, bool> dependsCache;
-  std::set<instPairT> outstandingDependsQueries;
+  std::map<InstrPairType, bool> dependsCache;
+  std::set<InstrPairType> outstandingDependsQueries;
 
   int getMaxCommonDepth(Instruction *i0, Instruction *i1) {
     // DEBUG(dbgs() << *I0 << " and " << *I1 << " \n");
@@ -401,7 +401,7 @@ class ScopMetaInfo {
 
 public:
   ScopMetaInfo(Scop &scop)
-      : tdi(*scop.getLI()), ctx(isl::ctx(isl_ctx_alloc())) {
+      : instrDependenceInfo(*scop.getLI()), ctx(isl::ctx(isl_ctx_alloc())) {
     // ctx = isl::ctx(isl_ctx_alloc());
     loopInfo = scop.getLI();
 
@@ -486,13 +486,13 @@ public:
 
         const int commonDepth = getMaxCommonDepth(inst, wrInst);
 
-        auto pair = instPairT(wrInst, inst);
+        auto pair = InstrPairType(wrInst, inst);
         auto *rdInst = dyn_cast_or_null<LoadInst>(inst);
 
         isl::map instMap, wrInstMap;
 
-        bool depends = tdi.hasDependency(wrInst, inst) ||
-                       tdi.hasReverseDependency(inst, wrInst);
+        bool depends = instrDependenceInfo.hasDependency(wrInst, inst) ||
+                       instrDependenceInfo.hasReverseDependency(inst, wrInst);
 
         /* Only WrInst may only depend on Inst if Inst is a load */
         if (rdInst != nullptr && depends) {
@@ -527,7 +527,7 @@ public:
     }
   }
 
-  std::set<instPairT> &getIntersectionList() { return intersections; }
+  std::set<InstrPairType> &getIntersectionList() { return intersections; }
 
   std::map<Instruction *, Value *> &getInstsToBase() { return instToBase; }
 
@@ -547,7 +547,7 @@ struct IndexAnalysis {
 
   /// Query whether any SCoP contains BB
   bool isInScop(const BasicBlock *bb) {
-    return bBlist.find(bb) != bBlist.end();
+    return bbList.find(bb) != bbList.end();
   }
 
   /// Returns an integer uniquely identifying the SCoP which contains BB
@@ -557,17 +557,17 @@ struct IndexAnalysis {
 
   /// Returns a set of instruction pairs which exist in some SCoP and have RAW
   /// dependencies between them
-  const std::set<instPairT> &getRAWlist() { return instRAWlist; }
+  const std::set<InstrPairType> &getRAWlist() { return instRAWlist; }
 
   /// Returns a set of instruction pairs which exist in some SCoP and have
   /// WAW dependencies between them.
-  const std::set<instPairT> &getWAWlist() { return instWAWlist; }
+  const std::set<InstrPairType> &getWAWlist() { return instWAWlist; }
 
   // std::vector<std::set<Instruction *>> instSets;
   std::vector<const Instruction *> otherInsts;
-  std::set<instPairT> instRAWlist;
-  std::set<instPairT> instWAWlist;
-  std::set<const BasicBlock *> bBlist;
+  std::set<InstrPairType> instRAWlist;
+  std::set<InstrPairType> instWAWlist;
+  std::set<const BasicBlock *> bbList;
   std::map<const BasicBlock *, int> bbToScopMap;
   std::map<const Instruction *, const Value *> instToBase;
 };
@@ -661,8 +661,8 @@ struct LSQUsageAnalysisPass : PassInfoMixin<LSQUsageAnalysisPass> {
     TopLevelLoopMetaInfo() = default;
     ~TopLevelLoopMetaInfo() = default;
 
-    std::set<Instruction *> rdInsts;
-    std::set<Instruction *> wrInsts;
+    std::set<Instruction *> readInstructions;
+    std::set<Instruction *> writeInstructions;
     std::map<Instruction *, int> instToScop;
   };
 
@@ -673,7 +673,8 @@ struct LSQUsageAnalysisPass : PassInfoMixin<LSQUsageAnalysisPass> {
                    std::vector<struct TopLevelLoopMetaInfo> &loopMetaInfos);
   PreservedAnalyses run(Function &f, FunctionAnalysisManager &fam);
 
-  std::vector<instPairT> getDependencyPairs(struct TopLevelLoopMetaInfo &lm);
+  std::vector<InstrPairType>
+  getDependencyPairs(struct TopLevelLoopMetaInfo &loopInfo);
 
   AAManager::Result *aliasAnalysis;
 };
@@ -787,14 +788,14 @@ PreservedAnalyses LSQUsageAnalysisPass::run(Function &f,
   return PreservedAnalyses::all();
 }
 
-void LSQUsageAnalysisPass::processScop(Scop &s,
+void LSQUsageAnalysisPass::processScop(Scop &scop,
                                        std::vector<ScopMetaInfo> &scopMeta) {
 
-  auto meta = ScopMetaInfo(s);
+  auto meta = ScopMetaInfo(scop);
 
-  for (auto &stmt : s) {
+  for (auto &stmt : scop) {
     auto *bb = stmt.getBasicBlock();
-    indexAnalysis.bBlist.insert(bb);
+    indexAnalysis.bbList.insert(bb);
     indexAnalysis.bbToScopMap[bb] = scopMeta.size();
 
     if (!hasMemoryReadOrWrite(stmt))
@@ -841,10 +842,10 @@ void LSQUsageAnalysisPass::processLoop(
       if (isa<CallInst>(&inst))
         continue;
 
-      if (isa<llvm::LoadInst>(inst))
-        loopMetaData.rdInsts.insert(&inst);
-      if (isa<llvm::StoreInst>(inst))
-        loopMetaData.wrInsts.insert(&inst);
+      if (inst.mayReadFromMemory())
+        loopMetaData.readInstructions.insert(&inst);
+      if (inst.mayWriteToMemory())
+        loopMetaData.writeInstructions.insert(&inst);
 
       if (isInScop)
         loopMetaData.instToScop[&inst] = scopId;
@@ -852,16 +853,16 @@ void LSQUsageAnalysisPass::processLoop(
   }
 }
 
-std::vector<instPairT>
-LSQUsageAnalysisPass::getDependencyPairs(struct TopLevelLoopMetaInfo &lm) {
-  std::vector<instPairT> intersectList;
-  auto rdInstrSet = lm.rdInsts;
-  auto wrInstrSet = lm.wrInsts;
+std::vector<InstrPairType> LSQUsageAnalysisPass::getDependencyPairs(
+    struct TopLevelLoopMetaInfo &loopInfo) {
+  std::vector<InstrPairType> intersectList;
+  auto rdInstrSet = loopInfo.readInstructions;
+  auto wrInstrSet = loopInfo.writeInstructions;
 
   for (auto *wrInst : wrInstrSet) {
     /* Find RAW dependencies */
     for (auto *rdInst : rdInstrSet) {
-      auto pair = instPairT(wrInst, rdInst);
+      auto pair = InstrPairType(wrInst, rdInst);
 
       /* Each base array is emitted as a separate RAM in the design. Two
        * instructions targetting differing base arrays can never depend */
@@ -870,10 +871,10 @@ LSQUsageAnalysisPass::getDependencyPairs(struct TopLevelLoopMetaInfo &lm) {
 
       /*  If both instructions are in the same scop,
           use the result from IndexAnalysis */
-      auto rdIt = lm.instToScop.find(rdInst);
-      auto wrIt = lm.instToScop.find(wrInst);
-      if (rdIt != lm.instToScop.end() && wrIt != lm.instToScop.end() &&
-          rdIt->second == wrIt->second) {
+      auto rdIt = loopInfo.instToScop.find(rdInst);
+      auto wrIt = loopInfo.instToScop.find(wrInst);
+      if (rdIt != loopInfo.instToScop.end() &&
+          wrIt != loopInfo.instToScop.end() && rdIt->second == wrIt->second) {
         if (indexAnalysis.getRAWlist().find(pair) !=
             indexAnalysis.getRAWlist().end())
           intersectList.push_back(pair);
@@ -881,36 +882,37 @@ LSQUsageAnalysisPass::getDependencyPairs(struct TopLevelLoopMetaInfo &lm) {
       }
 
       /* Otherwise, use results from AA */
-      auto *li = dyn_cast<LoadInst>(rdInst);
-      auto *si = dyn_cast<StoreInst>(wrInst);
+      auto *loadInst = dyn_cast<LoadInst>(rdInst);
+      auto *storeInst = dyn_cast<StoreInst>(wrInst);
 
-      if (li == nullptr || si == nullptr) {
+      if (loadInst == nullptr || storeInst == nullptr) {
         llvm_unreachable("Expecting only Read-Write pairs of "
                          "instructions when locating RAW dependencies");
       }
 
-      if (aliasAnalysis->alias(MemoryLocation::get(li),
-                               MemoryLocation::get(si)) != AliasResult::NoAlias)
+      if (aliasAnalysis->alias(MemoryLocation::get(loadInst),
+                               MemoryLocation::get(storeInst)) !=
+          AliasResult::NoAlias)
         intersectList.push_back(pair);
     }
     /* Find WAW dependencies */
-    for (auto *secondWrInst : wrInstrSet) {
-      if (secondWrInst == wrInst)
+    for (auto *secondStoreInst : wrInstrSet) {
+      if (secondStoreInst == wrInst)
         continue;
 
       /* Each base array is emitted as a separate RAM in the design. Two
        * instructions targetting differing base arrays can never depend */
-      if (!equalBase(wrInst, secondWrInst))
+      if (!equalBase(wrInst, secondStoreInst))
         continue;
 
-      auto pair = instPairT(secondWrInst, wrInst);
-      auto pairRev = instPairT(wrInst, secondWrInst);
+      auto pair = InstrPairType(secondStoreInst, wrInst);
+      auto pairRev = InstrPairType(wrInst, secondStoreInst);
       /*  If both instructions are in the same scop,
           use the result rom IndexAnalysis */
-      auto wr1It = lm.instToScop.find(secondWrInst);
-      auto wrIt = lm.instToScop.find(wrInst);
-      if (wr1It != lm.instToScop.end() && wrIt != lm.instToScop.end() &&
-          wr1It->second == wrIt->second) {
+      auto wr1It = loopInfo.instToScop.find(secondStoreInst);
+      auto wrIt = loopInfo.instToScop.find(wrInst);
+      if (wr1It != loopInfo.instToScop.end() &&
+          wrIt != loopInfo.instToScop.end() && wr1It->second == wrIt->second) {
         if (indexAnalysis.getWAWlist().find(pair) !=
             indexAnalysis.getWAWlist().end())
           intersectList.push_back(pair);
@@ -922,7 +924,7 @@ LSQUsageAnalysisPass::getDependencyPairs(struct TopLevelLoopMetaInfo &lm) {
 
       // Otherwise, use results from AA
       auto *storeInst0 = dyn_cast<StoreInst>(wrInst);
-      auto *storeInst1 = dyn_cast<StoreInst>(secondWrInst);
+      auto *storeInst1 = dyn_cast<StoreInst>(secondStoreInst);
 
       if (storeInst0 == nullptr || storeInst1 == nullptr) {
         llvm_unreachable("Expecting only Write-Write pairs of "
