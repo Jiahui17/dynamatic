@@ -88,8 +88,8 @@ $LLVM_BINS/mlir-translate \
 
 # The llvm -> mlir translation does not carry the dependency information (and
 # any meta data in general), therefore, the "--llvm-mark-memory-dependencies"
-# pass tries to post-process the converted mlir file and put the dependency
-# information there 
+# post-processes the converted mlir file and put the dependency information
+# there 
 $DYNAMATIC_BINS/dynamatic-opt \
   $OUT/clang_optimized_translated.mlir \
   --remove-polygeist-attributes \
