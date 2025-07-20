@@ -16,6 +16,7 @@
 #include "llvm/IR/Instructions.h"
 #include <stdexcept>
 #include <stdlib.h>
+#include <utility>
 
 using namespace llvm;
 using namespace polly;
@@ -261,7 +262,6 @@ class ScopMetaInfo {
   std::map<Instruction *, isl::map> instToCurrentMap;
   std::map<Instruction *, int> instToLoopDepth;
   std::set<InstrPairType> intersections;
-  std::set<InstrPairType> nonIntersections;
   std::map<Instruction *, Value *> instToBase;
   /* Each Minimized Scop has a separate context. This ensures that
    * trying to intersect maps for instructions from separate Scops
@@ -299,8 +299,7 @@ class ScopMetaInfo {
     return depth0;
   }
 
-  isl::map getMap(Instruction *inst, const unsigned int depthToKeep,
-                  const bool getFuture) {
+  isl::map getMap(Instruction *inst, unsigned int depthToKeep, bool getFuture) {
 
     const auto currentMap = instToCurrentMap[inst];
 
@@ -543,25 +542,23 @@ struct IndexAnalysis {
 
   /// Returns all memory instructions in SCoPs which do not require an LSQ
   /// connection
-  std::vector<const Instruction *> &getOtherInsts() { return otherInsts; }
+  std::vector<Instruction *> &getOtherInsts() { return otherInsts; }
 
   /// Query whether any SCoP contains BB
-  bool isInScop(const BasicBlock *bb) {
-    return bbList.find(bb) != bbList.end();
-  }
+  bool isInScop(BasicBlock *bb) { return bbList.find(bb) != bbList.end(); }
 
   /// Returns an integer uniquely identifying the SCoP which contains BB
-  int getScopID(const BasicBlock *bb) {
+  int getScopID(BasicBlock *bb) {
     return (isInScop(bb)) ? bbToScopMap[bb] : -1;
   }
 
   // std::vector<std::set<Instruction *>> instSets;
-  std::vector<const Instruction *> otherInsts;
+  std::vector<Instruction *> otherInsts;
   std::set<InstrPairType> instRAWlist;
   std::set<InstrPairType> instWAWlist;
-  std::set<const BasicBlock *> bbList;
-  std::map<const BasicBlock *, int> bbToScopMap;
-  std::map<const Instruction *, const Value *> instToBase;
+  std::set<BasicBlock *> bbList;
+  std::map<BasicBlock *, int> bbToScopMap;
+  std::map<Instruction *, Value *> instToBase;
 };
 
 void getAllRegions(Region &r, std::deque<Region *> &rq) {
@@ -627,29 +624,40 @@ bool equalBase(Instruction *a, Instruction *b) {
 }
 
 namespace {
+
+/// Memory metadata for top-level loops
+struct LoopMetaInfo {
+  LoopMetaInfo() = default;
+  ~LoopMetaInfo() = default;
+
+  std::set<LoadInst *> readInstructions;
+  std::set<StoreInst *> writeInstructions;
+
+  // NOTE: An instruction should not be present in multiple Scops (?), so a
+  // single set is a good container for it.
+  std::map<Instruction *, int> instToScop;
+
+  bool sameScop(Instruction *a, Instruction *b) {
+    if (instToScop.count(a) == 0)
+      return false;
+    if (instToScop.count(b) == 0)
+      return false;
+    return (instToScop[a] == instToScop[b]);
+  }
+};
+
 struct MemDepAnalysisPass : PassInfoMixin<MemDepAnalysisPass> {
 
-  /// Memory metadata for top-level loops
-  struct TopLevelLoopMetaInfo {
-    TopLevelLoopMetaInfo() = default;
-    ~TopLevelLoopMetaInfo() = default;
-
-    std::set<Instruction *> readInstructions;
-    std::set<Instruction *> writeInstructions;
-    std::map<Instruction *, int> instToScop;
-  };
-
   IndexAnalysis indexAnalysis;
+  AAManager::Result *aliasAnalysis;
 
   void processScop(Scop &s, std::vector<ScopMetaInfo> &scopMeta);
-  void processLoop(Loop *l,
-                   std::vector<struct TopLevelLoopMetaInfo> &loopMetaInfos);
+  void processLoop(Loop *l, std::vector<struct LoopMetaInfo> &loopMetaInfos);
   PreservedAnalyses run(Function &f, FunctionAnalysisManager &fam);
 
-  std::vector<InstrPairType>
-  getDependencyPairs(struct TopLevelLoopMetaInfo &loopInfo);
-
-  AAManager::Result *aliasAnalysis;
+  /// \brief: returns a list of (srcInst, dstInst) pairs that might have a WAR
+  /// or WAW conflict.
+  std::vector<InstrPairType> getDependencyPairs(struct LoopMetaInfo &loopInfo);
 };
 
 std::map<Instruction *, std::string> nameAllLoadStores(Function &f) {
@@ -703,7 +711,7 @@ PreservedAnalyses MemDepAnalysisPass::run(Function &f,
 
   auto &loopAnalysis = fam.getResult<LoopAnalysis>(f);
 
-  std::vector<TopLevelLoopMetaInfo> loopMetaInfos;
+  std::vector<LoopMetaInfo> loopMetaInfos;
 
   std::vector<ScopMetaInfo> scopMetaInfos;
 
@@ -747,14 +755,12 @@ PreservedAnalyses MemDepAnalysisPass::run(Function &f,
   }
 
   for (auto [src, dests] : instrToListOfDependentDestinations) {
-
     SmallVector<llvm::Metadata *, 10> mdVals;
     for (const auto &name : dests) {
       mdVals.push_back(MDString::get(ctx, name));
     }
     llvm::MDNode *destNamesNode = llvm::MDNode::get(ctx, ArrayRef(mdVals));
     destNamesNode->dump();
-
     src->setMetadata(DEST_NAMES, destNamesNode);
   }
 
@@ -780,9 +786,7 @@ void MemDepAnalysisPass::processScop(Scop &scop,
   meta.computeIntersections();
   auto intersectList = meta.getIntersectionList();
 
-  for (auto it : meta.getInstsToBase()) {
-    const auto *i = it.first;
-    const auto *v = it.second;
+  for (auto [i, v] : meta.getInstsToBase()) {
     indexAnalysis.instToBase[i] = v;
   }
 
@@ -800,7 +804,7 @@ void MemDepAnalysisPass::processScop(Scop &scop,
 }
 
 void MemDepAnalysisPass::processLoop(
-    Loop *l, std::vector<struct TopLevelLoopMetaInfo> &loopMetaInfos) {
+    Loop *l, std::vector<struct LoopMetaInfo> &loopMetaInfos) {
 
   loopMetaInfos.emplace_back();
   auto &loopMetaData = loopMetaInfos.back();
@@ -815,10 +819,12 @@ void MemDepAnalysisPass::processLoop(
       if (isa<CallInst>(&inst))
         continue;
 
-      if (inst.mayReadFromMemory())
-        loopMetaData.readInstructions.insert(&inst);
-      if (inst.mayWriteToMemory())
-        loopMetaData.writeInstructions.insert(&inst);
+      // NOTE: In legacy dynamatic here uses mayReadFromMemory and
+      // mayWriteToMemory, which I think is quite redundant for our need
+      if (auto *loadInst = dyn_cast<llvm::LoadInst>(&inst))
+        loopMetaData.readInstructions.emplace(loadInst);
+      if (auto *storeInst = dyn_cast<llvm::StoreInst>(&inst))
+        loopMetaData.writeInstructions.emplace(storeInst);
 
       if (isInScop)
         loopMetaData.instToScop[&inst] = scopId;
@@ -827,92 +833,70 @@ void MemDepAnalysisPass::processLoop(
 }
 
 std::vector<InstrPairType>
-MemDepAnalysisPass::getDependencyPairs(struct TopLevelLoopMetaInfo &loopInfo) {
-  std::vector<InstrPairType> intersectList;
-  auto rdInstrSet = loopInfo.readInstructions;
-  auto wrInstrSet = loopInfo.writeInstructions;
+MemDepAnalysisPass::getDependencyPairs(LoopMetaInfo &loopInfo) {
+  std::vector<InstrPairType> depPairList;
 
-  for (auto *wrInst : wrInstrSet) {
-    /* Find RAW dependencies */
-    for (auto *rdInst : rdInstrSet) {
-      auto pair = InstrPairType(wrInst, rdInst);
+  for (auto *storeInst : loopInfo.writeInstructions) {
+    // Find RAW dependencies
+    for (auto *loadInst : loopInfo.readInstructions) {
+      InstrPairType rawPair = std::make_pair(storeInst, loadInst);
 
-      /* Each base array is emitted as a separate RAM in the design. Two
-       * instructions targetting differing base arrays can never depend */
-      if (!equalBase(wrInst, rdInst))
+      // NOTE: In dynamatic we assume that memory with different base addresses
+      // are store in separate RAMs. Two instructions targetting differing base
+      // arrays can never conflict.
+      if (!equalBase(storeInst, loadInst))
         continue;
 
-      /*  If both instructions are in the same scop,
-          use the result from IndexAnalysis */
-      auto rdIt = loopInfo.instToScop.find(rdInst);
-      auto wrIt = loopInfo.instToScop.find(wrInst);
-      if (rdIt != loopInfo.instToScop.end() &&
-          wrIt != loopInfo.instToScop.end() && rdIt->second == wrIt->second) {
-        if (indexAnalysis.instRAWlist.find(pair) !=
-            indexAnalysis.instRAWlist.end())
-          intersectList.push_back(pair);
+      // Instructions are in the same scop: use the result from IndexAnalysis
+      if (loopInfo.sameScop(loadInst, storeInst)) {
+        if (indexAnalysis.instRAWlist.count(rawPair) > 0)
+          depPairList.push_back(rawPair);
         continue;
       }
 
-      /* Otherwise, use results from AA */
-      auto *loadInst = dyn_cast<LoadInst>(rdInst);
-      auto *storeInst = dyn_cast<StoreInst>(wrInst);
-
-      if (loadInst == nullptr || storeInst == nullptr) {
-        llvm_unreachable("Expecting only Read-Write pairs of "
-                         "instructions when locating RAW dependencies");
-      }
-
-      if (aliasAnalysis->alias(MemoryLocation::get(loadInst),
-                               MemoryLocation::get(storeInst)) !=
-          AliasResult::NoAlias)
-        intersectList.push_back(pair);
-    }
-    /* Find WAW dependencies */
-    for (auto *secondStoreInst : wrInstrSet) {
-      if (secondStoreInst == wrInst)
-        continue;
-
-      /* Each base array is emitted as a separate RAM in the design. Two
-       * instructions targetting differing base arrays can never depend */
-      if (!equalBase(wrInst, secondStoreInst))
-        continue;
-
-      auto pair = InstrPairType(secondStoreInst, wrInst);
-      auto pairRev = InstrPairType(wrInst, secondStoreInst);
-      /*  If both instructions are in the same scop,
-          use the result rom IndexAnalysis */
-      auto wr1It = loopInfo.instToScop.find(secondStoreInst);
-      auto wrIt = loopInfo.instToScop.find(wrInst);
-      if (wr1It != loopInfo.instToScop.end() &&
-          wrIt != loopInfo.instToScop.end() && wr1It->second == wrIt->second) {
-        if (indexAnalysis.instWAWlist.find(pair) !=
-            indexAnalysis.instWAWlist.end())
-          intersectList.push_back(pair);
-        else if (indexAnalysis.instWAWlist.find(pairRev) !=
-                 indexAnalysis.instWAWlist.end())
-          intersectList.push_back(pairRev);
-        continue;
-      }
-
-      // Otherwise, use results from AA
-      auto *storeInst0 = dyn_cast<StoreInst>(wrInst);
-      auto *storeInst1 = dyn_cast<StoreInst>(secondStoreInst);
-
-      if (storeInst0 == nullptr || storeInst1 == nullptr) {
-        llvm_unreachable("Expecting only Write-Write pairs of "
-                         "instructions when locating WAW dependencies");
-      }
+      // Instruction are in different Scops: use the result from alias analysis
+      AliasResult aliasResult = aliasAnalysis->alias(
+          MemoryLocation::get(loadInst), MemoryLocation::get(storeInst));
 
       // If they always or sometimes alias:
-      if (aliasAnalysis->alias(MemoryLocation::get(storeInst0),
-                               MemoryLocation::get(storeInst1)) !=
-          AliasResult::NoAlias)
-        intersectList.push_back(pair);
+      if (aliasResult != AliasResult::NoAlias) {
+        depPairList.push_back(rawPair);
+      }
+    }
+    // Find WAW dependencies
+    for (auto *secondStoreInst : loopInfo.writeInstructions) {
+      if (secondStoreInst == storeInst)
+        continue;
+
+      // NOTE: In dynamatic we assume that memory with different base addresses
+      // are store in separate RAMs. Two instructions targetting differing base
+      // arrays can never conflict.
+      if (!equalBase(storeInst, secondStoreInst))
+        continue;
+
+      auto pair = InstrPairType(secondStoreInst, storeInst);
+      auto pairRev = InstrPairType(storeInst, secondStoreInst);
+
+      // Instructions are in the same scop: use the result from IndexAnalysis
+      if (loopInfo.sameScop(storeInst, secondStoreInst)) {
+        if (indexAnalysis.instWAWlist.count(pair) > 0)
+          depPairList.push_back(pair);
+        else if (indexAnalysis.instWAWlist.count(pairRev) > 0)
+          depPairList.push_back(pairRev);
+        continue;
+      }
+
+      // Otherwise, use results from alias analysis:
+      AliasResult aliasResult = aliasAnalysis->alias(
+          MemoryLocation::get(storeInst), MemoryLocation::get(secondStoreInst));
+      // If they always or sometimes alias:
+      if (aliasResult != AliasResult::NoAlias) {
+        depPairList.push_back(pair);
+      }
     }
   }
 
-  return intersectList;
+  return depPairList;
 }
 
 } // end anonymous namespace
