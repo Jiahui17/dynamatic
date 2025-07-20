@@ -457,7 +457,7 @@ def DropUnlistedFunctions : Pass<"drop-unlisted-functions"> {
   "mlir::LLVM::LLVMDialect"];
 }
 
-def LLVMMetadataToAttribute : Pass<"llvm-metadata-to-attribute"> {
+def LLVMMarkMemoryDependencies : Pass<"llvm-mark-memory-dependencies"> {
   let summary = "Copy the meta data stored in LLVM IR that are relavant for us to LLVM dialect.";
 
   let description = [{The mlir-translate only retains very few types of meta

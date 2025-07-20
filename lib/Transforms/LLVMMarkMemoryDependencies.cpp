@@ -1,4 +1,4 @@
-#include "dynamatic/Transforms/LLVMMetadataToAttribute.h"
+#include "dynamatic/Transforms/LLVMMarkMemoryDependencies.h"
 
 #include "dynamatic/Conversion/LLVMToControlFlow.h"
 #include "dynamatic/Support/Attribute.h"
@@ -32,11 +32,10 @@
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "llvm/Support/Process.h"
-#include "llvm/Support/raw_ostream.h"
 #include <optional>
 #include <string>
 
@@ -50,20 +49,20 @@ using namespace dynamatic;
 
 // Boilerplate: Include this for the pass option defintitions
 namespace dynamatic {
-// import auto-generated base class definition LLVMMetadataToAttributeBase and
-// put it under the dynamatic namespace.
-#define GEN_PASS_DEF_LLVMMETADATATOATTRIBUTE
+// import auto-generated base class definition LLVMMarkMemoryDependenciesBase
+// and put it under the dynamatic namespace.
+#define GEN_PASS_DEF_LLVMMARKMEMORYDEPENDENCIES
 #include "dynamatic/Transforms/Passes.h.inc"
 } // namespace dynamatic
 
 namespace {
 // Metadata unseralized from the memory dependency analysis pass
-struct LLVMMetadataToAttributePass
-    : public dynamatic::impl::LLVMMetadataToAttributeBase<
-          LLVMMetadataToAttributePass> {
+struct LLVMMarkMemoryDependenciesPass
+    : public dynamatic::impl::LLVMMarkMemoryDependenciesBase<
+          LLVMMarkMemoryDependenciesPass> {
 
   /// \note: Use the auto-generated construtors from tblgen
-  using LLVMMetadataToAttributeBase::LLVMMetadataToAttributeBase;
+  using LLVMMarkMemoryDependenciesBase::LLVMMarkMemoryDependenciesBase;
   void runOnOperation() override;
 };
 
@@ -138,7 +137,7 @@ LogicalResult markMemoryDependency(LLVM::LLVMFuncOp funcOp,
   return success();
 }
 
-void LLVMMetadataToAttributePass::runOnOperation() {
+void LLVMMarkMemoryDependenciesPass::runOnOperation() {
   LLVMContext llvmCtx;
   SMDiagnostic err;
   std::unique_ptr<Module> llvmModule =

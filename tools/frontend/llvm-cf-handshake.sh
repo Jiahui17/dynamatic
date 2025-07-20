@@ -87,7 +87,7 @@ $LLVM_BINS/mlir-translate \
 $DYNAMATIC_BINS/dynamatic-opt \
   $OUT/clang_optimized_translated.mlir \
   --remove-polygeist-attributes \
-  --llvm-metadata-to-attribute="llvmir=$OUT/clang_optimized_dep_marked.ll" \
+  --llvm-mark-memory-dependencies="llvmir=$OUT/clang_optimized_dep_marked.ll" \
   --allow-unregistered-dialect \
   > $OUT/clang_optimized_translated_dep_marked.mlir
 
