@@ -263,16 +263,14 @@ class ScopMetaInfo {
   std::map<Instruction *, int> instToLoopDepth;
   std::set<InstrPairType> intersections;
   std::map<Instruction *, Value *> instToBase;
-  /* Each Minimized Scop has a separate context. This ensures that
-   * trying to intersect maps for instructions from separate Scops
-   * will raise an error */
+  // Each Minimized Scop has a separate context. This ensures that trying to
+  // intersect maps for instructions from separate Scops will raise an error
   isl::ctx ctx;
-  /* Used by the dependsInternal() function */
+  // Used by the dependsInternal() function
   std::map<InstrPairType, bool> dependsCache;
   std::set<InstrPairType> outstandingDependsQueries;
 
-  int getMaxCommonDepth(Instruction *i0, Instruction *i1) {
-    // DEBUG(dbgs() << *I0 << " and " << *I1 << " \n");
+  int getMaxCommonLoopDepth(Instruction *i0, Instruction *i1) {
     const auto *bb0 = i0->getParent();
     const auto *bb1 = i1->getParent();
     int depth0 = loopInfo->getLoopDepth(bb0);
@@ -289,8 +287,7 @@ class ScopMetaInfo {
       depth1--;
     }
 
-    /* Keep reducing loop depths until they match,
-     * or we reach outside all loops */
+    // Keep reducing loop depths until they match, or we reach outside all loops
     while (l1 != l0 && depth0-- > 0) {
       l0 = l0->getParentLoop();
       l1 = l1->getParentLoop();
@@ -442,84 +439,75 @@ public:
       }
   }
 
+  /// \brief: This function computes the WAR and WAW dependencies in a Scop.
+  ///
+  /// \example: For ... -> SI -> LI -> ... , SI may affect LI in this and future
+  /// iterations
+  ///      ↱---------------↵
+  /// intersect store-set with current and future load-set
+  ///
+  /// For ... -> LI -> SI -> ... , SI may affect LI only in future iterations
+  ///      ↱---------------↵
+  /// intersect store-set with future load-set
+  ///
+  /// For ... -> SI -> ......     , SI and LI iterations are independent
+  ///      ↱  -> LI ->     |
+  ///      |---------------↵
+  ///
+  /// intersect entire store-set with entire load-set. Foreach write access,
+  /// compare with relevant sets of read accesses.
+  ///
+  /// Similarly, two stores are checked for possible WAW conflicts
   void computeIntersections() {
-    /* Checking for RAW and WAW conflicts */
-    for (auto *wrInst : memInsts) {
-      if (!wrInst->mayWriteToMemory())
+    for (auto *storeInst : memInsts) {
+      if (!storeInst->mayWriteToMemory())
         continue;
 
-      // clang-format off
-        /* The following describes nodes corresponding to LoadInst and StoreInst 
-        * in an elastic circuit.  
-        *
-        * For ... -> SI -> LI -> ... , SI may affect LI in this and future iterations
-        *      ↱---------------↵
-        * intersect store-set with current and future load-set 
-        * 
-        * For ... -> LI -> SI -> ... , SI may affect LI only in future iterations
-        *      ↱---------------↵
-        * intersect store-set with future load-set
-        * 
-        * For ... -> SI -> ......     , SI and LI iterations are independent 
-        *      ↱  -> LI ->     |
-        *      |---------------↵
-        * intersect entire store-set with entire load-set 
-        * 
-        * Foreach write access, compare with relevant sets of read accesses 
-        * 
-        * Similarly, two stores are checked for possible WAW conflicts
-        * */
-      // clang-format on
-
-      for (auto *inst : memInsts) {
+      // Checking for RAW and WAW conflicts between storeInst and secondInst
+      for (auto *secondInst : memInsts) {
         /* Skip checking with self */
-        if (inst == wrInst)
+        if (secondInst == storeInst)
           continue;
-        /* No need to check between different arrays */
-        if (instToBase[inst] != instToBase[wrInst]) {
-          // DEBUG(dbgs() << "Skipping:Diff bases " << *Inst << " and " <<
-          // *WrInst
-          //              << "\n");
+
+        // No need to check between different arrays
+        if (instToBase[secondInst] != instToBase[storeInst]) {
           continue;
         }
 
-        const int commonDepth = getMaxCommonDepth(inst, wrInst);
+        int commonDepth = getMaxCommonLoopDepth(secondInst, storeInst);
 
-        auto pair = InstrPairType(wrInst, inst);
-        auto *rdInst = dyn_cast_or_null<LoadInst>(inst);
+        auto pair = InstrPairType(storeInst, secondInst);
+        auto *rdInst = dyn_cast_or_null<LoadInst>(secondInst);
 
         isl::map instMap, wrInstMap;
 
-        bool depends = instrDependenceInfo.hasDependency(wrInst, inst) ||
-                       instrDependenceInfo.hasReverseDependency(inst, wrInst);
+        bool hasDependency =
+            instrDependenceInfo.hasDependency(storeInst, secondInst) ||
+            instrDependenceInfo.hasReverseDependency(secondInst, storeInst);
 
-        /* Only WrInst may only depend on Inst if Inst is a load */
-        if (rdInst != nullptr && depends) {
-          /* Consecutive top-level loops will finish the load before any
-           * store, since there is an operand dependency */
+        // @Jiahui17: I didn't understand the if-else block below:
+        // Only WrInst may only depend on second if Inst is a load
+        if (rdInst != nullptr && hasDependency) {
+          // Consecutive top-level loops will finish the load before any store,
+          // since there is an operand dependency
           if (commonDepth == 0 && scopMinDepth == 1)
             continue;
-
-          const int depthToKeep = commonDepth - scopMinDepth + 1;
-          if (depthToKeep < 0) {
-            llvm_unreachable("Cannot keep negative depth!");
-          }
-          instMap = getMap(inst, static_cast<unsigned int>(depthToKeep), true);
-          wrInstMap =
-              getMap(wrInst, static_cast<unsigned int>(depthToKeep), false);
+          assert(commonDepth - scopMinDepth + 1 >= 0);
+          unsigned depthToKeep = commonDepth - scopMinDepth + 1;
+          instMap = getMap(secondInst, depthToKeep, true);
+          wrInstMap = getMap(storeInst, depthToKeep, false);
         } else {
-          /* Generic case: we cannot put any restrictions on the indices
-           * being processed by the instructions, if there are no token
-           * flow that can be established between them. Therefore, we
-           * intersect the sets of all possible indices ever accessed */
-          wrInstMap = getMap(wrInst, 0, false);
-          instMap = getMap(inst, 0, false);
+          // Generic case: we cannot put any restrictions on the indices being
+          // processed by the instructions, if there are no token flow that can
+          // be established between them. Therefore, we intersect the sets of
+          // all possible indices ever accessed
+          wrInstMap = getMap(storeInst, 0, false);
+          instMap = getMap(secondInst, 0, false);
         }
 
+        // If the two instructions might access the same index:
         isl::map intersect = instMap.intersect(wrInstMap);
         if (intersect.is_empty().is_false()) {
-          // DEBUG(dbgs() << *WrInst << "\t intersects \t" << *Inst << "\n");
-          // DEBUG(dbgs() << "Intersection is: " << intersect.to_str() << "\n");
           intersections.insert(pair);
         }
       }
