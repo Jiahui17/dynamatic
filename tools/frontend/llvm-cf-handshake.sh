@@ -123,3 +123,28 @@ $DYNAMATIC_BINS/dynamatic-opt \
   $OUT/cf_transformed.mlir \
   --lower-cf-to-handshake \
   > $OUT/handshake.mlir
+
+$DYNAMATIC_BINS/dynamatic-opt \
+  $OUT/handshake.mlir \
+  --handshake-analyze-lsq-usage --handshake-replace-memory-interfaces \
+  --handshake-minimize-cst-width --handshake-optimize-bitwidths \
+  --handshake-materialize --handshake-infer-basic-blocks \
+  > $OUT/handshake_transformed.mlir
+
+$DYNAMATIC_BINS/dynamatic-opt \
+  $OUT/handshake_transformed.mlir \
+  --handshake-mark-fpu-impl="impl=flopoco" \
+  --handshake-set-buffering-properties="version=fpga20" \
+  --handshake-place-buffers="algorithm=on-merges timing-models=$DYNAMATIC_PATH/data/components.json" \
+  > $OUT/handshake_buffered.mlir
+
+$DYNAMATIC_BINS/dynamatic-opt \
+  $OUT/handshake_buffered.mlir \
+  --handshake-canonicalize \
+  --handshake-hoist-ext-instances \
+  > $OUT/handshake_export.mlir
+
+$DYNAMATIC_BINS/dynamatic-opt \
+  $OUT/handshake_export.mlir \
+  --lower-handshake-to-hw \
+  > $OUT/hw.mlir
