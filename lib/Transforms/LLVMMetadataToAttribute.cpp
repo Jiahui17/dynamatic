@@ -16,33 +16,27 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
-#include "mlir/IR/PatternMatch.h"
-#include "mlir/IR/ValueRange.h"
-#include "mlir/Pass/Pass.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/IR/DerivedTypes.h"
-#include "llvm/IR/Metadata.h"
-#include "llvm/Support/Casting.h"
-
 #include "llvm/AsmParser/Parser.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Instruction.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "llvm/IR/Instruction.h"
-#include "llvm/IR/Instructions.h"
-
 #include "llvm/Support/Process.h"
 #include "llvm/Support/raw_ostream.h"
-#include <cstddef>
 #include <optional>
 #include <string>
 
@@ -101,10 +95,10 @@ retriveLoadStoreAnalysisDataFromMetaData(Function &f) {
 }
 
 /// \brief: performs two actions:
-// - Propagate the unique handshake names for loads and stores from LLVM IR to
-// MLIR.
-// - mark the RAW and WAW dependency specified by MemoryDependency on all memory
-// operations.
+/// - Propagate the unique handshake names for loads and stores from LLVM IR to
+/// MLIR.
+/// - mark the RAW and WAW dependency specified by MemoryDependency on all
+/// memory operations.
 LogicalResult markMemoryDependency(LLVM::LLVMFuncOp funcOp,
                                    std::vector<MemoryDependency> loadStoreData,
                                    OpBuilder &builder, MLIRContext &ctx) {
