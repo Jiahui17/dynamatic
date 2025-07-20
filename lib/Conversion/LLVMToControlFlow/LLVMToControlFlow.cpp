@@ -403,7 +403,10 @@ struct ConvertAllocaOps : public OpConversionPattern<LLVM::AllocaOp> {
     auto [allocaShape, elemType] =
         getLLVMAllocaShapeAndType(allocaShapeAndType.value());
 
-    auto newOp = rewriter.replaceOpWithNewOp<memref::AllocOp>(
+    // NOTE: There is a memref::AllocaOp and memref::AllocOp. AllocaOp allocates
+    // on the stack, which is semanticaly equivalent to the internal array in
+    // HLS circuits.
+    auto newOp = rewriter.replaceOpWithNewOp<memref::AllocaOp>(
         op, MemRefType::get(allocaShape, elemType));
 
     op->replaceAllUsesWith(newOp);
@@ -478,7 +481,7 @@ struct GEPToMemRefLoadAndStore : public OpConversionPattern<LLVM::GEPOp> {
     }
 
     if (Operation *op = gepBasePtr.getDefiningOp();
-        isa_and_nonnull<memref::AllocOp>(op)) {
+        isa_and_nonnull<memref::AllocaOp>(op)) {
       // NOTE: If GEP calculates value from a memory allocation (which is a
       // global value), an extra zero index value is required at the beginning
       // to calculate the address.

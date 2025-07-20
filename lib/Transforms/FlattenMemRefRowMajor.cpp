@@ -188,6 +188,22 @@ struct AllocOpConversion : public OpConversionPattern<memref::AllocOp> {
   }
 };
 
+struct AllocaOpConversion : public OpConversionPattern<memref::AllocaOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(memref::AllocaOp op, OpAdaptor /*adaptor*/,
+                  ConversionPatternRewriter &rewriter) const override {
+    MemRefType type = op.getType();
+    if (isUniDimensional(type) || !type.hasStaticShape())
+      return failure();
+    MemRefType newType = MemRefType::get(
+        SmallVector<int64_t>{type.getNumElements()}, type.getElementType());
+    rewriter.replaceOpWithNewOp<memref::AllocaOp>(op, newType);
+    return success();
+  }
+};
+
 // A generic pattern which will replace an op with a new op of the same type
 // but using the adaptor (type converted) operands.
 template <typename TOp>
@@ -276,6 +292,8 @@ static void populateFlattenMemRefsLegality(ConversionTarget &target) {
   target.addLegalDialect<arith::ArithDialect>();
   target.addDynamicallyLegalOp<memref::AllocOp>(
       [](memref::AllocOp op) { return isUniDimensional(op.getType()); });
+  target.addDynamicallyLegalOp<memref::AllocaOp>(
+      [](memref::AllocaOp op) { return isUniDimensional(op.getType()); });
   target.addDynamicallyLegalOp<memref::StoreOp>(
       [](memref::StoreOp op) { return op.getIndices().size() == 1; });
   target.addDynamicallyLegalOp<memref::LoadOp>(
@@ -325,7 +343,8 @@ public:
 
     RewritePatternSet patterns(ctx);
     SetVector<StringRef> rewrittenCallees;
-    patterns.add<AllocOpConversion, OperandConversionPattern<func::ReturnOp>,
+    patterns.add<AllocOpConversion, AllocaOpConversion,
+                 OperandConversionPattern<func::ReturnOp>,
                  OperandConversionPattern<memref::DeallocOp>,
                  CondBranchOpConversion,
                  OperandConversionPattern<memref::DeallocOp>,
