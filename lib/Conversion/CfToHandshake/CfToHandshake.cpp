@@ -740,7 +740,6 @@ LogicalResult LowerFuncToHandshake::convertMemoryOps(
   funcOp.walk([&](memref::AllocaOp op) {
     //
     Value memref = op->getResult(0);
-    op->dump();
     memInfo.insert({memref, {firstBlockControl}});
   });
 
@@ -1548,8 +1547,6 @@ struct CfToHandshakePass
           return signalPassFailure();
       }
     }
-
-    modOp->dump();
 
     CfToHandshakeTypeConverter converter;
     RewritePatternSet patterns(ctx);
