@@ -63,18 +63,20 @@ $LLVM_BINS/opt -S \
   $OUT/clang.ll \
   > $OUT/clang_optimized.ll
 
-# This pass uses polyhedral analysis to determine the dependency between memory operations
+# This pass uses polyhedral and alias analysis to determine the dependency
+# between memory operations.
 #
 # Example:
 # ======== histogram.ll =========
-#  %2 = load float, ptr %arrayidx4, align 4, !mem.op !5
+#  %2 = load float, ptr %arrayidx4, align 4, !handshake.name !5
 #  ...
-#  store float %add, ptr %arrayidx6, align 4, !mem.op !6 !dest.ops !5 ; this means that the store must happen before the load
+#  store float %add, ptr %arrayidx6, align 4, !handshake.name !6 !dest.ops !7 
 #  ...
-# !5 = !{!"load1", !"1"}
-# !6 = !{!"store1"}
+# !5 = !{!"load1"}
+# !6 = !{!"store!"}
+# !7 = !{!5, !"1"} ; this means that the store must happen before the load, with
+# a loop depth of 1
 # ===============================
-
 $LLVM_BINS/opt $OUT/clang_optimized.ll -S \
   -load-pass-plugin "$DYNAMATIC_PATH/build/tools/mem-dep-analysis/libMemDepAnalysis.so" \
   -passes="mem-dep-analysis" \
@@ -84,6 +86,10 @@ $LLVM_BINS/mlir-translate \
   --import-llvm $OUT/clang_optimized_dep_marked.ll \
   > $OUT/clang_optimized_translated.mlir
 
+# The llvm -> mlir translation does not carry the dependency information (and
+# any meta data in general), therefore, the "--llvm-mark-memory-dependencies"
+# pass tries to post-process the converted mlir file and put the dependency
+# information there 
 $DYNAMATIC_BINS/dynamatic-opt \
   $OUT/clang_optimized_translated.mlir \
   --remove-polygeist-attributes \
