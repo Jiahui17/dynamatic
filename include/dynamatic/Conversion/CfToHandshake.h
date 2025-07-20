@@ -59,9 +59,9 @@ public:
         lsqPorts;
     /// Function argument corresponding to the memory start signal for that
     /// interface.
-    BlockArgument memStart;
+    Value memStart;
 
-    MemAccesses(BlockArgument memStart);
+    MemAccesses(Value memStart);
   };
 
   /// Stores a mapping between memory regions (identified by the function

@@ -70,7 +70,7 @@ $LLVM_BINS/opt -S \
 # ======== histogram.ll =========
 #  %2 = load float, ptr %arrayidx4, align 4, !handshake.name !5
 #  ...
-#  store float %add, ptr %arrayidx6, align 4, !handshake.name !6 !dest.ops !7 
+#  store float %add, ptr %arrayidx6, align 4, !handshake.name !6 !dest.ops !7
 #  ...
 # !5 = !{!"load1"}
 # !6 = !{!"store!"}
@@ -89,7 +89,7 @@ $LLVM_BINS/mlir-translate \
 # The llvm -> mlir translation does not carry the dependency information (and
 # any meta data in general), therefore, the "--llvm-mark-memory-dependencies"
 # post-processes the converted mlir file and put the dependency information
-# there 
+# there
 $DYNAMATIC_BINS/dynamatic-opt \
   $OUT/clang_optimized_translated.mlir \
   --remove-polygeist-attributes \
@@ -113,7 +113,6 @@ $DYNAMATIC_BINS/dynamatic-opt \
 $DYNAMATIC_BINS/dynamatic-opt \
   $OUT/cf.mlir \
   --func-set-arg-names="source=$F_SRC" \
-  --mark-memory-dependencies \
   --flatten-memref-row-major \
   --canonicalize \
   --push-constants \

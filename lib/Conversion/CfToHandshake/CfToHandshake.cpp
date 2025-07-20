@@ -233,6 +233,7 @@ LogicalResult LowerFuncToHandshake::matchAndRewrite(
   // Stores mapping from each value that passes through a merge-like operation
   // to the data result of that merge operation
   ArgReplacements argReplacements;
+
   addMergeOps(funcOp, rewriter, argReplacements);
   addBranchOps(funcOp, rewriter);
 
@@ -486,7 +487,7 @@ static Value getMergeOperand(BlockArgument blockArg, Block *predBlock,
 /// Determines the list of predecessors of the block by iterating over all block
 /// terminators in the parent function. If the terminator is a conditional
 /// branch whose branches both point to the target block, then the owning block
-/// is added twice to the list and the branhc's "false destinatiob" is
+/// is added twice to the list and the branhc's "false destination" is
 /// associated with a false boolean value; in all other situatuions predecessor
 /// blocks are associated a true boolean value.
 static SmallVector<std::pair<Block *, bool>>
@@ -695,7 +696,7 @@ void LowerFuncToHandshake::addBranchOps(
   }
 }
 
-LowerFuncToHandshake::MemAccesses::MemAccesses(BlockArgument memStart)
+LowerFuncToHandshake::MemAccesses::MemAccesses(Value memStart)
     : memStart(memStart) {}
 
 LogicalResult LowerFuncToHandshake::convertMemoryOps(
@@ -721,6 +722,16 @@ LogicalResult LowerFuncToHandshake::convertMemoryOps(
       memInfo.insert({arg, {funcArgs[memStartIdx]}});
     }
   }
+
+  // // Record each alloca operation to memInfo
+  // Block *firstBlock = &funcOp.getBlocks().front();
+  // auto firstBlockControl = getBlockControl(firstBlock);
+  // funcOp.walk([&](memref::AllocaOp op) {
+  //   //
+  //   Value memref = op->getResult(0);
+
+  //   memInfo.insert({memref, {firstBlockControl}});
+  // });
 
   // Used to keep consistency betweeen memory access names referenced by memory
   // dependencies and names of replaced memory operations
@@ -1515,6 +1526,8 @@ struct CfToHandshakePass
           return signalPassFailure();
       }
     }
+
+    modOp->dump();
 
     CfToHandshakeTypeConverter converter;
     RewritePatternSet patterns(ctx);
