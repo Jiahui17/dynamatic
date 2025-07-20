@@ -398,10 +398,32 @@ class ScopMetaInfo {
 public:
   ScopMetaInfo(Scop &scop)
       : instrDependenceInfo(*scop.getLI()), ctx(isl::ctx(isl_ctx_alloc())) {
-    // ctx = isl::ctx(isl_ctx_alloc());
     loopInfo = scop.getLI();
 
-    /* Calculate scopMinDepth based on first scopStmt */
+    // @Jiahui17: Here is my understanding of what the code below is doing, we
+    // need a person to proof-read this.
+    //
+    // clang-format off
+    // Calculate scopMinDepth based on first scopStmt
+    // example:
+    // for (...) { // <- This is the start of the full loop nest (getRelativeLoopDepth will factor this part out)
+    //   if (A[0] > 1) {
+    //     // Scop starts from here: notice that, here, by definition, the depth is 1 (hence the assert below)
+    //     for (i=0;i<N;++i) { 
+    //       tmp_A = A[i][0]; // <- first scop statement (the code below calculates the depth of this??)
+    //       for (j=0;j<M;++j) {
+    //         tmp_B = B[i][j]; // <- second scop statement
+    //         tmp_C = C[i][j]; 
+    //         tmp = tmp_A + tmp_B + tmp_C;
+    //         D[i][j] = tmp_A;
+    //         ...
+    //       }
+    //     }
+    //     // Scop ends at here
+    //   }
+    // }
+    // clang-format on
+
     auto *bb = scop.begin()->getBasicBlock();
     auto *l = loopInfo->getLoopFor(bb);
     scopMinDepth = loopInfo->getLoopDepth(bb) - scop.getRelativeLoopDepth(l);
