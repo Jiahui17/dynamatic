@@ -654,7 +654,7 @@ using LSQset = struct LSQset {
 };
 
 namespace {
-struct LSQUsageAnalysisPass : PassInfoMixin<LSQUsageAnalysisPass> {
+struct MemDepAnalysisPass : PassInfoMixin<MemDepAnalysisPass> {
 
   /// Memory metadata for top-level loops
   struct TopLevelLoopMetaInfo {
@@ -721,8 +721,8 @@ std::map<Instruction *, std::string> nameAllLoadStores(Function &f) {
   return nameMapping;
 }
 
-PreservedAnalyses LSQUsageAnalysisPass::run(Function &f,
-                                            FunctionAnalysisManager &fam) {
+PreservedAnalyses MemDepAnalysisPass::run(Function &f,
+                                          FunctionAnalysisManager &fam) {
 
   auto &regionInfoAnalysis = fam.getResult<RegionInfoAnalysis>(f);
 
@@ -788,8 +788,8 @@ PreservedAnalyses LSQUsageAnalysisPass::run(Function &f,
   return PreservedAnalyses::all();
 }
 
-void LSQUsageAnalysisPass::processScop(Scop &scop,
-                                       std::vector<ScopMetaInfo> &scopMeta) {
+void MemDepAnalysisPass::processScop(Scop &scop,
+                                     std::vector<ScopMetaInfo> &scopMeta) {
 
   auto meta = ScopMetaInfo(scop);
 
@@ -826,7 +826,7 @@ void LSQUsageAnalysisPass::processScop(Scop &scop,
   scopMeta.push_back(meta);
 }
 
-void LSQUsageAnalysisPass::processLoop(
+void MemDepAnalysisPass::processLoop(
     Loop *l, std::vector<struct TopLevelLoopMetaInfo> &loopMetaInfos) {
 
   loopMetaInfos.emplace_back();
@@ -853,8 +853,8 @@ void LSQUsageAnalysisPass::processLoop(
   }
 }
 
-std::vector<InstrPairType> LSQUsageAnalysisPass::getDependencyPairs(
-    struct TopLevelLoopMetaInfo &loopInfo) {
+std::vector<InstrPairType>
+MemDepAnalysisPass::getDependencyPairs(struct TopLevelLoopMetaInfo &loopInfo) {
   std::vector<InstrPairType> intersectList;
   auto rdInstrSet = loopInfo.readInstructions;
   auto wrInstrSet = loopInfo.writeInstructions;
@@ -950,13 +950,13 @@ std::vector<InstrPairType> LSQUsageAnalysisPass::getDependencyPairs(
 // https://stackoverflow.com/questions/51474188/using-shared-object-so-by-command-opt-in-llvm
 extern "C" ::llvm::PassPluginLibraryInfo LLVM_ATTRIBUTE_WEAK
 llvmGetPassPluginInfo() {
-  return {LLVM_PLUGIN_API_VERSION, "LSQUsageAnalysis", LLVM_VERSION_STRING,
+  return {LLVM_PLUGIN_API_VERSION, "MemDepAnalysis", LLVM_VERSION_STRING,
           [](PassBuilder &pb) {
             pb.registerPipelineParsingCallback(
                 [](StringRef name, FunctionPassManager &fpm,
                    ArrayRef<PassBuilder::PipelineElement>) {
-                  if (name == "lsq-usage-analysis") {
-                    fpm.addPass(LSQUsageAnalysisPass());
+                  if (name == "mem-dep-analysis") {
+                    fpm.addPass(MemDepAnalysisPass());
                     return true;
                   }
                   return false;
