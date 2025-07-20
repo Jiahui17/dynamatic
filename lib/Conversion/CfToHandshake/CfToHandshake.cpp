@@ -723,15 +723,26 @@ LogicalResult LowerFuncToHandshake::convertMemoryOps(
     }
   }
 
-  // // Record each alloca operation to memInfo
-  // Block *firstBlock = &funcOp.getBlocks().front();
-  // auto firstBlockControl = getBlockControl(firstBlock);
-  // funcOp.walk([&](memref::AllocaOp op) {
-  //   //
-  //   Value memref = op->getResult(0);
+  // Record each alloca operation to memInfo
+  Block *firstBlock = &funcOp.getBlocks().front();
+  auto firstBlockControl = getBlockControl(firstBlock);
 
-  //   memInfo.insert({memref, {firstBlockControl}});
-  // });
+  // for (auto &regions : funcOp->getRegions()) {
+  //   for (auto &block : regions.getBlocks()) {
+  //     for (auto &op : block.getOperations()) {
+  //       if (isa<memref::AllocOp>(op)) {
+  //         loadStoreOperations.push_back(&op);
+  //       }
+  //     }
+  //   }
+  // }
+
+  funcOp.walk([&](memref::AllocaOp op) {
+    //
+    Value memref = op->getResult(0);
+    op->dump();
+    memInfo.insert({memref, {firstBlockControl}});
+  });
 
   // Used to keep consistency betweeen memory access names referenced by memory
   // dependencies and names of replaced memory operations
@@ -799,12 +810,23 @@ LogicalResult LowerFuncToHandshake::convertMemoryOps(
 
     // Associate the new operation with the memory region it references and
     // the memory interface it should connect to
-    auto *accessesIt = memInfo.find(funcArgs[memrefIndices.at(memref)]);
-    assert(accessesIt != memInfo.end() && "unknown memref");
-    if (memAttr.connectsToMC())
-      accessesIt->second.mcPorts[block].push_back(portOp);
-    else
-      accessesIt->second.lsqPorts[*memAttr.getLsqGroup()].push_back(portOp);
+
+    //
+    if (memrefIndices.contains(memref)) {
+      auto *accessesIt = memInfo.find(funcArgs[memrefIndices.at(memref)]);
+      assert(accessesIt != memInfo.end() && "unknown memref");
+      if (memAttr.connectsToMC())
+        accessesIt->second.mcPorts[block].push_back(portOp);
+      else
+        accessesIt->second.lsqPorts[*memAttr.getLsqGroup()].push_back(portOp);
+    } else {
+      auto *accessesIt = memInfo.find(memref);
+      assert(accessesIt != memInfo.end() && "unknown memref");
+      if (memAttr.connectsToMC())
+        accessesIt->second.mcPorts[block].push_back(portOp);
+      else
+        accessesIt->second.lsqPorts[*memAttr.getLsqGroup()].push_back(portOp);
+    }
   }
 
   memOpLowering.renameDependencies(funcOp);
@@ -1570,6 +1592,7 @@ struct CfToHandshakePass
     ConversionTarget target(*ctx);
     target.addLegalOp<mlir::ModuleOp>();
     target.addLegalDialect<handshake::HandshakeDialect>();
+    target.addLegalOp<memref::AllocOp, memref::AllocaOp>();
     target.addIllegalDialect<func::FuncDialect, cf::ControlFlowDialect,
                              arith::ArithDialect, math::MathDialect,
                              BuiltinDialect>();

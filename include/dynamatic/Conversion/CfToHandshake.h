@@ -65,8 +65,8 @@ public:
   };
 
   /// Stores a mapping between memory regions (identified by the function
-  /// argument they correspond to) and the set of memory operations referencing
-  /// them.
+  /// argument they correspond to or the result of an memref.AllocOp) and the
+  /// set of memory operations referencing them.
   using MemInterfacesInfo = llvm::MapVector<Value, MemAccesses>;
 
   /// Creates a Handshake-level equivalent to the matched func-level function,
