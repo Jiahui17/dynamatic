@@ -300,9 +300,6 @@ class ScopAnalysisInfo {
       l1 = l1->getParentLoop();
       depth1--;
     }
-    // NOTE: if there are no common loops, then l0 == nullptr == l1
-    assert((depth1 == depth0) && (l0 == l1) &&
-           "We should arrive to the same loop here!");
 
     // NOTE: Keep reducing loop depths until they match, or we reach outside all
     // loops (i.e., depth0 == 0).

@@ -15,7 +15,7 @@ F_SRC=$2
 # Example: "fir"
 FUNC_NAME=$3
 
-[ -f "$F_SRC" ] || exit 1
+[ -f "$F_SRC" ] || { echo "$F_SRC is not a file!"; exit 1;}
 
 # Will be change to standard path in the future (i.e., out/comp).
 OUT=/tmp/dhls-frontend-output
