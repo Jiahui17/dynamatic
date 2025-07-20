@@ -253,7 +253,16 @@ bool InstructionDependenceInfo::hasReverseDependency(Instruction *iA,
 
 using InstrPairType = std::pair<Instruction *, Instruction *>;
 
-class ScopMetaInfo {
+/// \brief: An data container class that represents the analysis data from the
+/// Scop.
+///
+/// Terminologies:
+/// - Scop: Static control part of the code. For more details
+/// (https://www.cs.colostate.edu/~pouchet/software/polyopt/doc/htmltexinfo/Specifics-of-Polyhedral-Programs.html).
+/// - Scop statement: one basic block in Scop.
+/// - isl::set: an integer set, here it usually represent a set of memory access
+/// indices.
+class ScopAnalysisInfo {
   LoopInfo *loopInfo;
   InstructionDependenceInfo instrDependenceInfo;
 
@@ -270,7 +279,9 @@ class ScopMetaInfo {
   std::map<InstrPairType, bool> dependsCache;
   std::set<InstrPairType> outstandingDependsQueries;
 
-  int getMaxCommonLoopDepth(Instruction *i0, Instruction *i1) {
+  /// \brief (needs proof-read here): Find the loop depth of the outer most
+  /// common loop that contain both instructions.
+  int getOutMostCommonLoopDepth(Instruction *i0, Instruction *i1) {
     const auto *bb0 = i0->getParent();
     const auto *bb1 = i1->getParent();
     int depth0 = loopInfo->getLoopDepth(bb0);
@@ -278,6 +289,8 @@ class ScopMetaInfo {
     Loop *l0 = loopInfo->getLoopFor(bb0);
     Loop *l1 = loopInfo->getLoopFor(bb1);
 
+    // NOTE: These two while loops attempt to find the common loop (not
+    // necessarily the outer-most) that contains both instructions
     while (depth0 > depth1) {
       l0 = l0->getParentLoop();
       depth0--;
@@ -286,8 +299,12 @@ class ScopMetaInfo {
       l1 = l1->getParentLoop();
       depth1--;
     }
+    // NOTE: if there are no common loops, then l0 == nullptr == l1
+    assert((depth1 == depth0) && (l0 == l1) &&
+           "We should arrive to the same loop here!");
 
-    // Keep reducing loop depths until they match, or we reach outside all loops
+    // NOTE: Keep reducing loop depths until they match, or we reach outside all
+    // loops (i.e., depth0 == 0).
     while (l1 != l0 && depth0-- > 0) {
       l0 = l0->getParentLoop();
       l1 = l1->getParentLoop();
@@ -396,7 +413,7 @@ class ScopMetaInfo {
   }
 
 public:
-  ScopMetaInfo(Scop &scop)
+  ScopAnalysisInfo(Scop &scop)
       : instrDependenceInfo(*scop.getLI()), ctx(isl::ctx(isl_ctx_alloc())) {
     loopInfo = scop.getLI();
 
@@ -404,7 +421,7 @@ public:
     // need a person to proof-read this.
     //
     // clang-format off
-    // Calculate scopMinDepth based on first scopStmt
+    // Calculate scopMinDepth based on first scopStmt.
     // example:
     // for (...) { // <- This is the start of the full loop nest (getRelativeLoopDepth will factor this part out)
     //   if (A[0] > 1) {
@@ -430,7 +447,7 @@ public:
     assert(scopMinDepth > 0);
   }
 
-  ~ScopMetaInfo() = default;
+  ~ScopAnalysisInfo() = default;
   /* Use addScopStmt() to add all ScopStmt's in a Scop. Then,
    * computeIntersections() and finally getIntersectionList() */
 
@@ -439,9 +456,9 @@ public:
 
     for (auto *inst : stmt.getInstructions())
       if (inst->mayReadOrWriteMemory()) {
-        auto &ma = stmt.getArrayAccessFor(inst);
+        auto &memoryAccess = stmt.getArrayAccessFor(inst);
 
-        isl::map currentMap = ma.getLatestAccessRelation();
+        isl::map currentMap = memoryAccess.getLatestAccessRelation();
 
         isl::map domain = isl::map::from_domain(stmt.getDomain());
 
@@ -456,7 +473,7 @@ public:
         instToCurrentMap.emplace(inst, currentMap.intersect(domain));
 
         instToLoopDepth[inst] = depth;
-        instToBase[inst] = ma.getOriginalBaseAddr();
+        instToBase[inst] = memoryAccess.getOriginalBaseAddr();
         memInsts.push_back(inst);
       }
   }
@@ -496,7 +513,7 @@ public:
           continue;
         }
 
-        int commonDepth = getMaxCommonLoopDepth(secondInst, storeInst);
+        int commonDepth = getOutMostCommonLoopDepth(secondInst, storeInst);
 
         auto pair = InstrPairType(storeInst, secondInst);
         auto *rdInst = dyn_cast_or_null<LoadInst>(secondInst);
@@ -507,11 +524,14 @@ public:
             instrDependenceInfo.hasDependency(storeInst, secondInst) ||
             instrDependenceInfo.hasReverseDependency(secondInst, storeInst);
 
-        // @Jiahui17: I didn't understand the if-else block below:
         // Only WrInst may only depend on second if Inst is a load
         if (rdInst != nullptr && hasDependency) {
           // Consecutive top-level loops will finish the load before any store,
-          // since there is an operand dependency
+          // since there is an operand dependency.
+          //
+          // @Jiahui17: Here I don't understand these things:
+          // - Why do we care that the minDepth is 1?
+          // - RAW doesn't have any operand dependency!
           if (commonDepth == 0 && scopMinDepth == 1)
             continue;
           assert(commonDepth - scopMinDepth + 1 >= 0);
@@ -661,7 +681,7 @@ struct MemDepAnalysisPass : PassInfoMixin<MemDepAnalysisPass> {
   IndexAnalysis indexAnalysis;
   AAManager::Result *aliasAnalysis;
 
-  void processScop(Scop &s, std::vector<ScopMetaInfo> &scopMeta);
+  void processScop(Scop &s, std::vector<ScopAnalysisInfo> &scopMeta);
   void processLoop(Loop *l, std::vector<struct LoopMetaInfo> &loopMetaInfos);
   PreservedAnalyses run(Function &f, FunctionAnalysisManager &fam);
 
@@ -712,75 +732,10 @@ std::map<Instruction *, std::string> nameAllLoadStores(Function &f) {
   return nameMapping;
 }
 
-PreservedAnalyses MemDepAnalysisPass::run(Function &f,
-                                          FunctionAnalysisManager &fam) {
-
-  auto &regionInfoAnalysis = fam.getResult<RegionInfoAnalysis>(f);
-
-  auto &scopInfoAnalysis = fam.getResult<ScopInfoAnalysis>(f);
-
-  auto &loopAnalysis = fam.getResult<LoopAnalysis>(f);
-
-  std::vector<LoopMetaInfo> loopMetaInfos;
-
-  std::vector<ScopMetaInfo> scopMetaInfos;
-
-  aliasAnalysis = &fam.getResult<AAManager>(f);
-
-  std::deque<Region *> rq;
-  getAllRegions(*regionInfoAnalysis.getTopLevelRegion(), rq);
-
-  Scop *s;
-  for (Region *r : rq) {
-    if ((s = scopInfoAnalysis.getScop(r)))
-      processScop(*s, scopMetaInfos);
-  }
-
-  /* Process loops according to AA */
-  for (Loop *loop : loopAnalysis) {
-    /* Currently, we shall analyze only top-level loops */
-    // TODO: Properly handle multi-level loops
-    if (loop->getLoopDepth() > 1)
-      continue;
-
-    processLoop(loop, loopMetaInfos);
-  }
-
-  auto nameMapping = nameAllLoadStores(f);
-  llvm::LLVMContext &ctx = f.getContext();
-
-  std::map<Instruction *, std::vector<std::string /*names*/>>
-      instrToListOfDependentDestinations;
-
-  for (auto &meta : loopMetaInfos) {
-    for (auto &[src, dst] : getDependencyPairs(meta)) {
-      assert(nameMapping.count(src) > 0 && "Unnamed load/store op!");
-      // Get the name meta data
-      if (instrToListOfDependentDestinations.count(src) == 0) {
-        instrToListOfDependentDestinations[src] = {nameMapping[dst]};
-      } else {
-        instrToListOfDependentDestinations[src].emplace_back(nameMapping[dst]);
-      }
-    }
-  }
-
-  for (auto [src, dests] : instrToListOfDependentDestinations) {
-    SmallVector<llvm::Metadata *, 10> mdVals;
-    for (const auto &name : dests) {
-      mdVals.push_back(MDString::get(ctx, name));
-    }
-    llvm::MDNode *destNamesNode = llvm::MDNode::get(ctx, ArrayRef(mdVals));
-    destNamesNode->dump();
-    src->setMetadata(DEST_NAMES, destNamesNode);
-  }
-
-  return PreservedAnalyses::all();
-}
-
 void MemDepAnalysisPass::processScop(Scop &scop,
-                                     std::vector<ScopMetaInfo> &scopMeta) {
+                                     std::vector<ScopAnalysisInfo> &scopMeta) {
 
-  auto meta = ScopMetaInfo(scop);
+  auto meta = ScopAnalysisInfo(scop);
 
   for (auto &stmt : scop) {
     auto *bb = stmt.getBasicBlock();
@@ -800,9 +755,9 @@ void MemDepAnalysisPass::processScop(Scop &scop,
     indexAnalysis.instToBase[i] = v;
   }
 
-  /* The convention used in ScopMeta class is that the first element
-   * in an instPair is a store instruction. Thus, checking the type
-   * of the second instruction tells us whther it is a RAW/WAW dependency */
+  // The convention used in ScopMeta class is that the first element in an
+  // instPair is a store instruction. Thus, checking the type of the second
+  // instruction tells us whther it is a RAW/WAW dependency
   for (auto pair : intersectList) {
     if (pair.second->mayWriteToMemory())
       indexAnalysis.instWAWlist.insert(pair);
@@ -907,6 +862,71 @@ MemDepAnalysisPass::getDependencyPairs(LoopMetaInfo &loopInfo) {
   }
 
   return depPairList;
+}
+
+PreservedAnalyses MemDepAnalysisPass::run(Function &f,
+                                          FunctionAnalysisManager &fam) {
+
+  auto &regionInfoAnalysis = fam.getResult<RegionInfoAnalysis>(f);
+
+  auto &scopInfoAnalysis = fam.getResult<ScopInfoAnalysis>(f);
+
+  auto &loopAnalysis = fam.getResult<LoopAnalysis>(f);
+
+  std::vector<LoopMetaInfo> loopMetaInfos;
+
+  std::vector<ScopAnalysisInfo> scopMetaInfos;
+
+  aliasAnalysis = &fam.getResult<AAManager>(f);
+
+  std::deque<Region *> rq;
+  getAllRegions(*regionInfoAnalysis.getTopLevelRegion(), rq);
+
+  Scop *s;
+  for (Region *r : rq) {
+    if ((s = scopInfoAnalysis.getScop(r)))
+      processScop(*s, scopMetaInfos);
+  }
+
+  /* Process loops according to AA */
+  for (Loop *loop : loopAnalysis) {
+    /* Currently, we shall analyze only top-level loops */
+    // TODO: Properly handle multi-level loops
+    if (loop->getLoopDepth() > 1)
+      continue;
+
+    processLoop(loop, loopMetaInfos);
+  }
+
+  auto nameMapping = nameAllLoadStores(f);
+  llvm::LLVMContext &ctx = f.getContext();
+
+  std::map<Instruction *, std::vector<std::string /*names*/>>
+      instrToListOfDependentDestinations;
+
+  for (auto &meta : loopMetaInfos) {
+    for (auto &[src, dst] : getDependencyPairs(meta)) {
+      assert(nameMapping.count(src) > 0 && "Unnamed load/store op!");
+      // Get the name meta data
+      if (instrToListOfDependentDestinations.count(src) == 0) {
+        instrToListOfDependentDestinations[src] = {nameMapping[dst]};
+      } else {
+        instrToListOfDependentDestinations[src].emplace_back(nameMapping[dst]);
+      }
+    }
+  }
+
+  for (auto [src, dests] : instrToListOfDependentDestinations) {
+    SmallVector<llvm::Metadata *, 10> mdVals;
+    for (const auto &name : dests) {
+      mdVals.push_back(MDString::get(ctx, name));
+    }
+    llvm::MDNode *destNamesNode = llvm::MDNode::get(ctx, ArrayRef(mdVals));
+    destNamesNode->dump();
+    src->setMetadata(DEST_NAMES, destNamesNode);
+  }
+
+  return PreservedAnalyses::all();
 }
 
 } // end anonymous namespace
