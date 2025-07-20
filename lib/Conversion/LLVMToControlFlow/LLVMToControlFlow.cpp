@@ -376,6 +376,42 @@ struct ConvertLLVMFuncOp : public OpConversionPattern<LLVM::LLVMFuncOp> {
   }
 };
 
+/// \brief: Maps all the LLVM::AllocaOps to memref::allocaOps. We map the
+/// multidimension array shape in LLVM to memref.
+struct ConvertAllocaOps : public OpConversionPattern<LLVM::AllocaOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::pair<SmallVector<int64_t>, Type>
+  getLLVMAllocaShapeAndType(Type type) const {
+    SmallVector<int64_t> shape;
+    while (auto arrayType = llvm::dyn_cast_or_null<LLVM::LLVMArrayType>(type)) {
+      shape.push_back(arrayType.getNumElements());
+      type = arrayType.getElementType();
+    }
+    return std::make_pair(shape, type);
+  }
+
+  LogicalResult
+  matchAndRewrite(LLVM::AllocaOp op, OpAdaptor adapter,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    // Get the shape:
+    auto allocaShapeAndType = op.getElemType();
+    if (!allocaShapeAndType.has_value())
+      return failure();
+
+    auto [allocaShape, elemType] =
+        getLLVMAllocaShapeAndType(allocaShapeAndType.value());
+
+    auto newOp = rewriter.replaceOpWithNewOp<memref::AllocOp>(
+        op, MemRefType::get(allocaShape, elemType));
+
+    op->replaceAllUsesWith(newOp);
+
+    return success();
+  }
+};
+
 /// \brief: This struct rewrites all the pattern that connects GEP -> {Load1,
 /// Load2, ..., Store1, Store2, ...}.
 ///
@@ -441,20 +477,32 @@ struct GEPToMemRefLoadAndStore : public OpConversionPattern<LLVM::GEPOp> {
       }
     }
 
+    if (Operation *op = gepBasePtr.getDefiningOp();
+        isa_and_nonnull<memref::AllocOp>(op)) {
+      // NOTE: If GEP calculates value from a memory allocation (which is a
+      // global value), an extra zero index value is required at the beginning
+      // to calculate the address.
+      //
+      // Reference:
+      // https://llvm.org/docs/GetElementPtr.html#why-is-the-extra-0-index-required
+      //
+      // Therefore, we drop the first element in this case
+      indexValues.erase(indexValues.begin());
+    }
+
     // NOTE: GEPOp has the following syntax (some details omitted):
     // GEPOp %basePtr, %firstDim, %secondDim, %thirdDim, ...
     // When you iterate through the indices, it also returns indices from left
     // to right. However, the following two syntaxes are equivalent in LLVM:
     // - (1) GEPop %basePtr, %firstDim, 0, 0
     // - (2) GEPop %basePtr, %firstDim
-    // Notice that, in the second example, the trailing constant 0s are omitted.
-    // Source:
+    // Notice that, in the second example, the trailing constant 0s are
+    // omitted. Source:
     // https://llvm.org/docs/GetElementPtr.html#why-do-gep-x-1-0-0-and-gep-x-1-alias
     //
     // However, memref::LoadOp and memref::StoreOp must have their indices
     // match the memref. So here we need to fill in the constant zeros.
-    int remainingConstZeros =
-        memrefType.getShape().size() - op.getIndices().size();
+    int remainingConstZeros = memrefType.getShape().size() - indexValues.size();
     assert(remainingConstZeros >= 0 &&
            "GEP should only omit indices, but shouldn't have more indices than "
            "the original memref type extracted from the function argument!");
@@ -818,6 +866,7 @@ void LLVMToControlFlowPass::runOnOperation() {
   RewritePatternSet rewriteLoadStoreOperations(ctx);
   rewriteLoadStoreOperations.add<
       // clang-format off
+      ConvertAllocaOps,
       GEPToMemRefLoadAndStore,
       LLVMLoadWithConstantIndex,
       LLVMStoreWithConstantIndex
