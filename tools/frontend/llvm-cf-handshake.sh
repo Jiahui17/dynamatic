@@ -76,8 +76,8 @@ $LLVM_BINS/opt -S \
 # ===============================
 
 $LLVM_BINS/opt $OUT/clang_optimized.ll -S \
-  -load-pass-plugin "$DYNAMATIC_PATH/build/tools/lsq-usage-analysis/libLSQUsageAnalysisPass.so" \
-  -passes="lsq-usage-analysis" \
+  -load-pass-plugin "$DYNAMATIC_PATH/build/tools/mem-dep-analysis/libMemDepAnalysis.so" \
+  -passes="mem-dep-analysis" \
   > $OUT/clang_optimized_dep_marked.ll
 
 $LLVM_BINS/mlir-translate \

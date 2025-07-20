@@ -35,21 +35,21 @@ public:
   /// Returns true if every token coming to I_A has passed through I_B
   /// without traversing any BB-edge that would increment common induction
   /// variables
-  bool hasDependency(const Instruction *iB, const Instruction *iA);
+  bool hasDependency(Instruction *iB, Instruction *iA);
 
   /// Query whether I_B is reversely dependant on I_A: I_A -RD-> I_B
   /// Returns true if every token coming to I_A will pass through I_B
   /// without traversing any BB-edge that would increment common induction
   /// variables
-  bool hasReverseDependency(const Instruction *iA, const Instruction *iB);
+  bool hasReverseDependency(Instruction *iA, Instruction *iB);
 
 private:
   const LoopInfo &loopInfo;
 };
 
-using Path = struct Path {
-  std::vector<const BasicBlock *> blocks;
-  std::map<const BasicBlock *, std::set<const Value *>> vals;
+struct CFGPath {
+  std::vector<BasicBlock *> blocks;
+  std::map<BasicBlock *, std::set<Value *>> vals;
 };
 
 bool inLoopLatches(const BasicBlock *bb, const std::set<Loop *> &loopSet) {
@@ -58,12 +58,12 @@ bool inLoopLatches(const BasicBlock *bb, const std::set<Loop *> &loopSet) {
                      [&bb](Loop *loop) { return loop->getLoopLatch() == bb; });
 }
 
-bool tokenDepends(const Path &p, const Instruction *instA,
+bool tokenDepends(const CFGPath &p, Instruction *instA,
                   const std::set<Loop *> &loopSet) {
   int len = p.blocks.size();
-  const BasicBlock *curBB = p.blocks.back();
-  std::set<const Value *> activeVals = p.vals.at(curBB);
-  std::map<const BasicBlock *, std::set<const Value *>> phiDepends;
+  BasicBlock *curBB = p.blocks.back();
+  std::set<Value *> activeVals = p.vals.at(curBB);
+  std::map<BasicBlock *, std::set<Value *>> phiDepends;
 
   llvm::errs().indent(len * 4) << curBB->getName() << "\n";
 
@@ -82,19 +82,19 @@ bool tokenDepends(const Path &p, const Instruction *instA,
     if (activeVals.find(inst) == activeVals.end())
       continue;
     /* Else, its operands are active dependences too */
-    if (const auto *phiNode = dyn_cast<PHINode>(inst)) {
+    if (auto *phiNode = dyn_cast<PHINode>(inst)) {
       /* For Phi nodes, the active dependent values may be different
           in the different predecessors BB, so we store them in this map
           for now. We add it to the Path.Val set before recursive calls */
-      for (const auto &predBB : phiNode->blocks()) {
+      for (auto &predBB : phiNode->blocks()) {
         auto *value = phiNode->getIncomingValueForBlock(predBB);
         if (!(isa<Argument>(value) || isa<Constant>(value)))
           phiDepends[predBB].insert(value);
       }
     } else {
-      for (const auto *op : inst->operand_values())
+      for (auto *op : inst->operand_values())
         if (!(isa<Argument>(op) || isa<Constant>(op)))
-          activeVals.insert(op);
+          activeVals.emplace(op);
     }
   }
 
@@ -105,8 +105,8 @@ bool tokenDepends(const Path &p, const Instruction *instA,
     // active dependences. If so, dependency is met.
     depends = activeVals.find(instA) != activeVals.end();
   } else {
-    std::vector<const BasicBlock *> validPreds;
-    for (const auto *predBB : predecessors(curBB)) {
+    std::vector<BasicBlock *> validPreds;
+    for (auto *predBB : predecessors(curBB)) {
       /* This depends on having a canonical loop structure. Loops will
        * have a single latch with a single successor: the loop header.
        * Continuing across an edge from a latch to header for any loop in
@@ -126,12 +126,12 @@ bool tokenDepends(const Path &p, const Instruction *instA,
     // this basic block (plus any potential active values from phi-nodes
     // with incoming values for the given predecessor block) into a
     // successive call to tokenDepends.
-    for (const auto *predBB : validPreds) {
+    for (auto *predBB : validPreds) {
       if (!depends)
         break;
 
-      Path predBBPath = p;
-      predBBPath.blocks.push_back(predBB);
+      CFGPath predBBPath = p;
+      predBBPath.blocks.emplace_back(predBB);
       predBBPath.vals[predBB] = activeVals;
       auto it = phiDepends.find(predBB);
       if (it != phiDepends.end())
@@ -146,11 +146,11 @@ bool tokenDepends(const Path &p, const Instruction *instA,
   return depends;
 }
 
-static bool tokenRevDepends(Path path, const Instruction *instA,
+static bool tokenRevDepends(CFGPath path, Instruction *instA,
                             const std::set<Loop *> &loopSet) {
   const int len = path.blocks.size();
-  const BasicBlock *curBB = path.blocks.back();
-  const BasicBlock *predBB = (len > 1) ? path.blocks[len - 2] : nullptr;
+  BasicBlock *curBB = path.blocks.back();
+  BasicBlock *predBB = (len > 1) ? path.blocks[len - 2] : nullptr;
   auto activeVals = path.vals[curBB];
 
   llvm::errs().indent(len * 4) << curBB->getName() << "\n";
@@ -160,22 +160,22 @@ static bool tokenRevDepends(Path path, const Instruction *instA,
   /// dependences.
   /// If so, the instruction which has the operand is itself reverse
   /// dependent.
-  for (const auto &inst : *curBB) {
+  for (auto &inst : *curBB) {
     if (isa<BranchInst>(&inst) || isa<DbgInfoIntrinsic>(&inst))
       continue;
 
-    std::vector<const Value *> operands;
-    if (const auto *phiNode = dyn_cast<PHINode>(&inst)) {
+    std::vector<Value *> operands;
+    if (auto *phiNode = dyn_cast<PHINode>(&inst)) {
       /* For a PHI node, the only relevant operand is decided by the
        * prev BB */
       if (predBB != nullptr)
         operands.push_back(phiNode->getIncomingValueForBlock(predBB));
     } else {
-      for (const auto *op : inst.operand_values())
+      for (auto *op : inst.operand_values())
         operands.push_back(op);
     }
     /* If any of the operands has revdep on LI, this value does too */
-    for (const auto *op : operands)
+    for (auto *op : operands)
       if (activeVals.find(op) != activeVals.end())
         activeVals.insert(&inst);
   }
@@ -192,7 +192,7 @@ static bool tokenRevDepends(Path path, const Instruction *instA,
     const unsigned numSucc = curBB->getTerminator()->getNumSuccessors();
     depends = (numSucc > 0);
 
-    for (const auto *succBB : successors(curBB)) {
+    for (auto *succBB : successors(curBB)) {
       if (!depends)
         break;
 
@@ -205,7 +205,7 @@ static bool tokenRevDepends(Path path, const Instruction *instA,
       }
 
       /* If next BB has not been sufficiently explored, explore again */
-      Path succBBPath = path;
+      CFGPath succBBPath = path;
       succBBPath.blocks.push_back(succBB);
       succBBPath.vals[succBB] = activeVals;
 
@@ -218,11 +218,11 @@ static bool tokenRevDepends(Path path, const Instruction *instA,
 
 } // namespace
 
-bool InstructionDependenceInfo::hasDependency(const Instruction *iB,
-                                              const Instruction *iA) {
+bool InstructionDependenceInfo::hasDependency(Instruction *iB,
+                                              Instruction *iA) {
 
-  Path p;
-  const auto *bb = iB->getParent();
+  CFGPath p;
+  auto *bb = iB->getParent();
   p.blocks.push_back(bb);
   p.vals[bb] = {iB};
 
@@ -235,10 +235,10 @@ bool InstructionDependenceInfo::hasDependency(const Instruction *iB,
   return tokenDepends(p, iA, loopSet);
 }
 
-bool InstructionDependenceInfo::hasReverseDependency(const Instruction *iA,
-                                                     const Instruction *iB) {
-  Path p;
-  const auto *bb = iA->getParent();
+bool InstructionDependenceInfo::hasReverseDependency(Instruction *iA,
+                                                     Instruction *iB) {
+  CFGPath p;
+  auto *bb = iA->getParent();
   p.blocks.push_back(bb);
   p.vals[bb] = {iA};
 
@@ -555,14 +555,6 @@ struct IndexAnalysis {
     return (isInScop(bb)) ? bbToScopMap[bb] : -1;
   }
 
-  /// Returns a set of instruction pairs which exist in some SCoP and have RAW
-  /// dependencies between them
-  const std::set<InstrPairType> &getRAWlist() { return instRAWlist; }
-
-  /// Returns a set of instruction pairs which exist in some SCoP and have
-  /// WAW dependencies between them.
-  const std::set<InstrPairType> &getWAWlist() { return instWAWlist; }
-
   // std::vector<std::set<Instruction *>> instSets;
   std::vector<const Instruction *> otherInsts;
   std::set<InstrPairType> instRAWlist;
@@ -633,25 +625,6 @@ Value *findBase(Instruction *inst) {
 bool equalBase(Instruction *a, Instruction *b) {
   return findBase(a) == findBase(b);
 }
-
-/* An LSQset is a set instructions that have *possible* memory
- * dependences in a function and hence, need runtime address
- * aliasing via an LSQ */
-using LSQset = struct LSQset {
-  LSQset(const Value *v, Instruction *i0, Instruction *i1) {
-    base = v;
-    insts.insert(i0);
-    insts.insert(i1);
-  }
-  LSQset(const Value *v) { base = v; }
-
-  const Value *base;
-  std::set<Instruction *> insts;
-
-  using iterator = std::set<Instruction *>::iterator;
-  iterator begin() { return insts.begin(); }
-  iterator end() { return insts.end(); }
-};
 
 namespace {
 struct MemDepAnalysisPass : PassInfoMixin<MemDepAnalysisPass> {
@@ -875,8 +848,8 @@ MemDepAnalysisPass::getDependencyPairs(struct TopLevelLoopMetaInfo &loopInfo) {
       auto wrIt = loopInfo.instToScop.find(wrInst);
       if (rdIt != loopInfo.instToScop.end() &&
           wrIt != loopInfo.instToScop.end() && rdIt->second == wrIt->second) {
-        if (indexAnalysis.getRAWlist().find(pair) !=
-            indexAnalysis.getRAWlist().end())
+        if (indexAnalysis.instRAWlist.find(pair) !=
+            indexAnalysis.instRAWlist.end())
           intersectList.push_back(pair);
         continue;
       }
@@ -913,11 +886,11 @@ MemDepAnalysisPass::getDependencyPairs(struct TopLevelLoopMetaInfo &loopInfo) {
       auto wrIt = loopInfo.instToScop.find(wrInst);
       if (wr1It != loopInfo.instToScop.end() &&
           wrIt != loopInfo.instToScop.end() && wr1It->second == wrIt->second) {
-        if (indexAnalysis.getWAWlist().find(pair) !=
-            indexAnalysis.getWAWlist().end())
+        if (indexAnalysis.instWAWlist.find(pair) !=
+            indexAnalysis.instWAWlist.end())
           intersectList.push_back(pair);
-        else if (indexAnalysis.getWAWlist().find(pairRev) !=
-                 indexAnalysis.getWAWlist().end())
+        else if (indexAnalysis.instWAWlist.find(pairRev) !=
+                 indexAnalysis.instWAWlist.end())
           intersectList.push_back(pairRev);
         continue;
       }
