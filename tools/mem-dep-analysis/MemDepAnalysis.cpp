@@ -108,10 +108,10 @@ bool tokenDepends(const CFGPath &p, Instruction *instA,
   } else {
     std::vector<BasicBlock *> validPreds;
     for (auto *predBB : predecessors(curBB)) {
-      /* This depends on having a canonical loop structure. Loops will
-       * have a single latch with a single successor: the loop header.
-       * Continuing across an edge from a latch to header for any loop in
-       * LS is not allowed. */
+      // This depends on having a canonical loop structure. Loops will have a
+      // single latch with a single successor: the loop header.  Continuing
+      // across an edge from a latch to header for any loop in LS is not
+      // allowed.
       if (!(inLoopLatches(predBB, loopSet) ||
             (p.vals.count(predBB) && p.vals.at(predBB) == activeVals))) {
         validPreds.push_back(predBB);
@@ -185,10 +185,9 @@ static bool tokenRevDepends(CFGPath path, Instruction *instA,
   if (instA->getParent() == curBB) {
     depends = activeVals.find(instA) != activeVals.end();
   } else if (inLoopLatches(curBB, loopSet)) {
-    /* This depends on having a canonical loop structure. Loops will
-     * have a single latch with a single successor: the loop header.
-     * Continuing across an edge from a latch to header for any loop in
-     * LS is not allowed. */
+    // This depends on having a canonical loop structure. Loops will have a
+    // single latch with a single successor: the loop header.  Continuing across
+    // an edge from a latch to header for any loop in LS is not allowed.
   } else {
     const unsigned numSucc = curBB->getTerminator()->getNumSuccessors();
     depends = (numSucc > 0);
@@ -197,15 +196,15 @@ static bool tokenRevDepends(CFGPath path, Instruction *instA,
       if (!depends)
         break;
 
-      /* Skip successor BB if no active values have been added in this
-       * call to TokenRevDepends */
+      // Skip successor BB if no active values have been added in this call to
+      // TokenRevDepends
       if (std::find(path.blocks.begin(), path.blocks.end(), succBB) !=
           path.blocks.end()) {
         if (path.vals[succBB] == activeVals)
           continue;
       }
 
-      /* If next BB has not been sufficiently explored, explore again */
+      // If next BB has not been sufficiently explored, explore again
       CFGPath succBBPath = path;
       succBBPath.blocks.push_back(succBB);
       succBBPath.vals[succBB] = activeVals;
@@ -272,8 +271,8 @@ class ScopAnalysisInfo {
   std::map<Instruction *, int> instToLoopDepth;
   std::set<InstrPairType> intersections;
   std::map<Instruction *, Value *> instToBase;
-  // Each Minimized Scop has a separate context. This ensures that trying to
-  // intersect maps for instructions from separate Scops will raise an error
+  /// Each Minimized Scop has a separate context. This ensures that trying to
+  /// intersect maps for instructions from separate Scops will raise an error
   isl::ctx ctx;
   // Used by the dependsInternal() function
   std::map<InstrPairType, bool> dependsCache;
@@ -333,8 +332,7 @@ class ScopAnalysisInfo {
     return removeMapMeta(retMap);
   }
 
-  /* Functions for modifying isl::map to future forms */
-
+  /// \brief: Functions for modifying isl::map to future forms
   isl::map makeFutureMap(const isl::map &map) {
     isl::map fMap, tmpMap;
 
@@ -360,7 +358,7 @@ class ScopAnalysisInfo {
     return fMap;
   }
 
-  /* Add constraints on the 'n' most significant dimensions */
+  /// \brief: Add constraints on the 'n' most significant dimensions
   isl::map addFutureCondition(const isl::map &map, int n) {
 
     auto nInsToBeChecked = map.dim(isl::dim::in);
@@ -374,9 +372,8 @@ class ScopAnalysisInfo {
         isl_local_space_from_space(map.get_space().release());
     isl::local_space ls = isl::manage(lsp);
 
-    /* Add equality constraints on the first 'n - 1' dims,
-        Inequality on the last dim
-    */
+    // Add equality constraints on the first 'n - 1' dims, Inequality on the
+    // last dim
     for (int i = 0; i < n; i++) {
       isl::constraint c;
       if (i == n - 1) {
@@ -448,9 +445,9 @@ public:
   }
 
   ~ScopAnalysisInfo() = default;
-  /* Use addScopStmt() to add all ScopStmt's in a Scop. Then,
-   * computeIntersections() and finally getIntersectionList() */
 
+  /// \brief: Use addScopStmt() to add all ScopStmt's in a Scop. Then,
+  /// computeIntersections() and finally getIntersectionList()
   void addScopStmt(ScopStmt &stmt) {
     int depth = loopInfo->getLoopDepth(stmt.getBasicBlock());
 
@@ -624,15 +621,15 @@ Value *findBaseInternal(Value *addr) {
       auto *trueBase = findBaseInternal(si->getTrueValue());
       auto *falseBase = findBaseInternal(si->getFalseValue());
 
-      /* Select must choose pointers to same array. Otherwise cannot
-       * choose relevant arrayRAM in elastic circuit */
+      // Select must choose pointers to same array. Otherwise cannot
+      // choose relevant arrayRAM in elastic circuit
       assert(trueBase == falseBase);
       return trueBase;
     }
   }
 
-  /* We try to find a few known cases of pointer expression. For others,
-   * implement when you come across them */
+  // We try to find a few known cases of pointer expression. For others,
+  // implement when you come across them
   llvm_unreachable("Cannot  determine base array, aborting...");
 }
 
@@ -888,10 +885,12 @@ PreservedAnalyses MemDepAnalysisPass::run(Function &f,
       processScop(*s, scopMetaInfos);
   }
 
-  /* Process loops according to AA */
+  // Process loops according to AA
   for (Loop *loop : loopAnalysis) {
-    /* Currently, we shall analyze only top-level loops */
-    // TODO: Properly handle multi-level loops
+    // Currently, we shall analyze only top-level loops. TODO: Properly handle
+    // multi-level loops.
+    //
+    // @Jiahui17: I don't think why processLoop doesn't work here:
     if (loop->getLoopDepth() > 1)
       continue;
 
