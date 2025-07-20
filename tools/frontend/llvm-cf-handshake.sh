@@ -71,7 +71,7 @@ $LLVM_BINS/opt -S \
 #  ...
 #  store float %add, ptr %arrayidx6, align 4, !mem.op !6 !dest.ops !5 ; this means that the store must happen before the load
 #  ...
-# !5 = !{!"load1"}
+# !5 = !{!"load1", !"1"}
 # !6 = !{!"store1"}
 # ===============================
 
@@ -81,22 +81,27 @@ $LLVM_BINS/opt $OUT/clang_optimized.ll -S \
   > $OUT/clang_optimized_dep_marked.ll
 
 $LLVM_BINS/mlir-translate \
-  --import-llvm $OUT/clang_optimized.ll \
+  --import-llvm $OUT/clang_optimized_dep_marked.ll \
   > $OUT/clang_optimized_translated.mlir
+
+$DYNAMATIC_BINS/dynamatic-opt \
+  $OUT/clang_optimized_translated.mlir \
+  --remove-polygeist-attributes \
+  --llvm-metadata-to-attribute="llvmir=$OUT/clang_optimized_dep_marked.ll" \
+  --allow-unregistered-dialect \
+  > $OUT/clang_optimized_translated_dep_marked.mlir
 
 # - drop-unlist-functions: Dropping the functions that are not needed in HLS
 # compilation
 $DYNAMATIC_BINS/dynamatic-opt \
-  $OUT/clang_optimized_translated.mlir \
+  $OUT/clang_optimized_translated_dep_marked.mlir \
   --remove-polygeist-attributes \
   --drop-unlisted-functions="function-names=$FUNC_NAME" \
-  --allow-unregistered-dialect \
   > $OUT/clang_optimized_translated_droped_main_removed_attributes.mlir \
 
 $DYNAMATIC_BINS/dynamatic-opt \
   $OUT/clang_optimized_translated_droped_main_removed_attributes.mlir \
   --convert-llvm-to-cf="source=$F_SRC dynamatic-path=$DYNAMATIC_PATH" \
-  --remove-polygeist-attributes \
   > $OUT/cf.mlir
 
 $DYNAMATIC_BINS/dynamatic-opt \

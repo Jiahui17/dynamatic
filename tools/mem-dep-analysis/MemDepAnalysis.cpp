@@ -18,6 +18,8 @@
 #include <stdlib.h>
 #include <utility>
 
+#include "dynamatic/Support/MemoryDependency.h"
+
 using namespace llvm;
 using namespace polly;
 
@@ -50,7 +52,7 @@ private:
 
 struct CFGPath {
   std::vector<BasicBlock *> blocks;
-  std::map<BasicBlock *, std::set<Value *>> vals;
+  std::map<BasicBlock *, std::set<llvm::Value *>> vals;
 };
 
 bool inLoopLatches(const BasicBlock *bb, const std::set<Loop *> &loopSet) {
@@ -63,8 +65,8 @@ bool tokenDepends(const CFGPath &p, Instruction *instA,
                   const std::set<Loop *> &loopSet) {
   int len = p.blocks.size();
   BasicBlock *curBB = p.blocks.back();
-  std::set<Value *> activeVals = p.vals.at(curBB);
-  std::map<BasicBlock *, std::set<Value *>> phiDepends;
+  std::set<llvm::Value *> activeVals = p.vals.at(curBB);
+  std::map<BasicBlock *, std::set<llvm::Value *>> phiDepends;
 
   llvm::errs().indent(len * 4) << curBB->getName() << "\n";
 
@@ -165,7 +167,7 @@ static bool tokenRevDepends(CFGPath path, Instruction *instA,
     if (isa<BranchInst>(&inst) || isa<DbgInfoIntrinsic>(&inst))
       continue;
 
-    std::vector<Value *> operands;
+    std::vector<llvm::Value *> operands;
     if (auto *phiNode = dyn_cast<PHINode>(&inst)) {
       /* For a PHI node, the only relevant operand is decided by the
        * prev BB */
@@ -270,7 +272,7 @@ class ScopAnalysisInfo {
   std::map<Instruction *, isl::map> instToCurrentMap;
   std::map<Instruction *, int> instToLoopDepth;
   std::set<InstrPairType> intersections;
-  std::map<Instruction *, Value *> instToBase;
+  std::map<Instruction *, llvm::Value *> instToBase;
   /// Each Minimized Scop has a separate context. This ensures that trying to
   /// intersect maps for instructions from separate Scops will raise an error
   isl::ctx ctx;
@@ -555,7 +557,9 @@ public:
 
   std::set<InstrPairType> &getIntersectionList() { return intersections; }
 
-  std::map<Instruction *, Value *> &getInstsToBase() { return instToBase; }
+  std::map<Instruction *, llvm::Value *> &getInstsToBase() {
+    return instToBase;
+  }
 
   using iterator = std::vector<Instruction *>::iterator;
   iterator begin() { return memInsts.begin(); }
@@ -588,7 +592,7 @@ struct IndexAnalysis {
   std::map<Instruction *, Value *> instToBase;
 };
 
-void getAllRegions(Region &r, std::deque<Region *> &rq) {
+void getAllRegions(llvm::Region &r, std::deque<llvm::Region *> &rq) {
   rq.push_back(&r);
   for (const auto &e : r)
     getAllRegions(*e, rq);
@@ -652,10 +656,12 @@ bool equalBase(Instruction *a, Instruction *b) {
 
 namespace {
 
-/// Memory metadata for top-level loops
-struct LoopMetaInfo {
-  LoopMetaInfo() = default;
-  ~LoopMetaInfo() = default;
+/// Metadata for loops
+struct LoopMetaData {
+
+  Loop *loop;
+  LoopMetaData() = default;
+  ~LoopMetaData() = default;
 
   std::set<LoadInst *> readInstructions;
   std::set<StoreInst *> writeInstructions;
@@ -677,18 +683,20 @@ struct MemDepAnalysisPass : PassInfoMixin<MemDepAnalysisPass> {
 
   IndexAnalysis indexAnalysis;
   AAManager::Result *aliasAnalysis;
+  unsigned memCount = 0;
 
   void processScop(Scop &s, std::vector<ScopAnalysisInfo> &scopMeta);
-  void processLoop(Loop *l, std::vector<struct LoopMetaInfo> &loopMetaInfos);
+  void processLoop(Loop *l, std::vector<struct LoopMetaData> &loopMetaInfos);
   PreservedAnalyses run(Function &f, FunctionAnalysisManager &fam);
 
   /// \brief: returns a list of (srcInst, dstInst) pairs that might have a WAR
   /// or WAW conflict.
-  std::vector<InstrPairType> getDependencyPairs(struct LoopMetaInfo &loopInfo);
+  std::vector<InstrPairType> getDependencyPairs(struct LoopMetaData &loopInfo);
+  std::map<Instruction *, std::string> nameAllLoadStores(Function &f);
 };
 
-std::map<Instruction *, std::string> nameAllLoadStores(Function &f) {
-  unsigned memCount = 0;
+std::map<Instruction *, std::string>
+MemDepAnalysisPass::nameAllLoadStores(Function &f) {
   llvm::LLVMContext &context = f.getContext();
 
   std::map<Instruction *, std::string> nameMapping;
@@ -765,11 +773,13 @@ void MemDepAnalysisPass::processScop(Scop &scop,
   scopMeta.push_back(meta);
 }
 
-void MemDepAnalysisPass::processLoop(
-    Loop *l, std::vector<struct LoopMetaInfo> &loopMetaInfos) {
+void MemDepAnalysisPass::processLoop(Loop *l,
+                                     std::vector<LoopMetaData> &loopMetaInfos) {
 
   loopMetaInfos.emplace_back();
   auto &loopMetaData = loopMetaInfos.back();
+
+  loopMetaData.loop = l;
 
   for (auto *bb : l->getBlocks()) {
     int scopId = indexAnalysis.getScopID(bb);
@@ -795,7 +805,7 @@ void MemDepAnalysisPass::processLoop(
 }
 
 std::vector<InstrPairType>
-MemDepAnalysisPass::getDependencyPairs(LoopMetaInfo &loopInfo) {
+MemDepAnalysisPass::getDependencyPairs(LoopMetaData &loopInfo) {
   std::vector<InstrPairType> depPairList;
 
   for (auto *storeInst : loopInfo.writeInstructions) {
@@ -864,13 +874,15 @@ MemDepAnalysisPass::getDependencyPairs(LoopMetaInfo &loopInfo) {
 PreservedAnalyses MemDepAnalysisPass::run(Function &f,
                                           FunctionAnalysisManager &fam) {
 
+  llvm::LLVMContext &ctx = f.getContext();
+
   auto &regionInfoAnalysis = fam.getResult<RegionInfoAnalysis>(f);
 
   auto &scopInfoAnalysis = fam.getResult<ScopInfoAnalysis>(f);
 
   auto &loopAnalysis = fam.getResult<LoopAnalysis>(f);
 
-  std::vector<LoopMetaInfo> loopMetaInfos;
+  std::vector<LoopMetaData> loopMetaInfos;
 
   std::vector<ScopAnalysisInfo> scopMetaInfos;
 
@@ -890,7 +902,7 @@ PreservedAnalyses MemDepAnalysisPass::run(Function &f,
     // Currently, we shall analyze only top-level loops. TODO: Properly handle
     // multi-level loops.
     //
-    // @Jiahui17: I don't think why processLoop doesn't work here:
+    // @Jiahui17: I don't see why processLoop doesn't work for depth > 1.
     if (loop->getLoopDepth() > 1)
       continue;
 
@@ -898,31 +910,26 @@ PreservedAnalyses MemDepAnalysisPass::run(Function &f,
   }
 
   auto nameMapping = nameAllLoadStores(f);
-  llvm::LLVMContext &ctx = f.getContext();
 
-  std::map<Instruction *, std::vector<std::string /*names*/>>
-      instrToListOfDependentDestinations;
-
+  std::map<Instruction *, MemoryDependency> deps;
   for (auto &meta : loopMetaInfos) {
     for (auto &[src, dst] : getDependencyPairs(meta)) {
       assert(nameMapping.count(src) > 0 && "Unnamed load/store op!");
-      // Get the name meta data
-      if (instrToListOfDependentDestinations.count(src) == 0) {
-        instrToListOfDependentDestinations[src] = {nameMapping[dst]};
+      if (deps.count(src) == 0) {
+        MemoryDependency newDep;
+        newDep.name = nameMapping[src];
+        newDep.destAndDepth.emplace_back(nameMapping[dst],
+                                         meta.loop->getLoopDepth());
+        deps[src] = newDep;
       } else {
-        instrToListOfDependentDestinations[src].emplace_back(nameMapping[dst]);
+        deps[src].destAndDepth.emplace_back(nameMapping[dst],
+                                            meta.loop->getLoopDepth());
       }
     }
   }
 
-  for (auto [src, dests] : instrToListOfDependentDestinations) {
-    SmallVector<llvm::Metadata *, 10> mdVals;
-    for (const auto &name : dests) {
-      mdVals.push_back(MDString::get(ctx, name));
-    }
-    llvm::MDNode *destNamesNode = llvm::MDNode::get(ctx, ArrayRef(mdVals));
-    destNamesNode->dump();
-    src->setMetadata(DEST_NAMES, destNamesNode);
+  for (auto [src, dests] : deps) {
+    dests.serializeToLLVMMetaDataNode(ctx, src);
   }
 
   return PreservedAnalyses::all();

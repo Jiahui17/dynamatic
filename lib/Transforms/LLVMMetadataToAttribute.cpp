@@ -1,7 +1,9 @@
 #include "dynamatic/Transforms/LLVMMetadataToAttribute.h"
 
 #include "dynamatic/Conversion/LLVMToControlFlow.h"
+#include "dynamatic/Support/Attribute.h"
 #include "dynamatic/Support/LLVM.h"
+#include "dynamatic/Support/MemoryDependency.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/LLVMCommon/VectorPattern.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -15,6 +17,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/ValueRange.h"
@@ -45,6 +48,8 @@
 
 #include "dynamatic/Analysis/NameAnalysis.h"
 
+#include "dynamatic/Support/MemoryDependency.h"
+
 using namespace llvm;
 using namespace mlir;
 using namespace dynamatic;
@@ -57,19 +62,8 @@ namespace dynamatic {
 #include "dynamatic/Transforms/Passes.h.inc"
 } // namespace dynamatic
 
-// Metadata unseralized from the memory dependency analysis pass
-struct UnserializedLoadStoreMetaData {
-  // LLVM instruction
-  Instruction *llvmInstr;
-
-  // Metadata that holds the ID of the operation
-  std::string name;
-
-  // The IDs of the destinations of the dependency edges.
-  std::vector<std::string> destinations;
-};
-
 namespace {
+// Metadata unseralized from the memory dependency analysis pass
 struct LLVMMetadataToAttributePass
     : public dynamatic::impl::LLVMMetadataToAttributeBase<
           LLVMMetadataToAttributePass> {
@@ -78,73 +72,42 @@ struct LLVMMetadataToAttributePass
   using LLVMMetadataToAttributeBase::LLVMMetadataToAttributeBase;
   void runOnOperation() override;
 };
-} // namespace
 
-std::string getMemId(Instruction *instr) {
-  auto *nameMetaData = instr->getMetadata(NameAnalysis::ATTR_NAME);
-  assert(nameMetaData);
-  llvm::Metadata *data =
-      llvm::dyn_cast<llvm::MDString>(nameMetaData->getOperand(0));
-  assert(data);
-  llvm::MDString *strData = llvm::dyn_cast<llvm::MDString>(data);
-  assert(strData);
-  // It's a metadata string
-  UnserializedLoadStoreMetaData item;
-  return strData->getString().str();
-}
-
-std::vector<std::string> getDestOps(Instruction *instr) {
-  auto *nameMetaData = instr->getMetadata("dest.ops");
-
-  if (!nameMetaData) {
-    return {};
-  }
-
-  std::vector<std::string> destOps;
-
-  for (unsigned int i = 0; i < nameMetaData->getNumOperands(); ++i) {
-
-    llvm::Metadata *op = nameMetaData->getOperand(i);
-
-    if (llvm::MDString *mds = llvm::dyn_cast<llvm::MDString>(op)) {
-      // It's a metadata string
-      destOps.push_back(mds->getString().str());
-    }
-  }
-
-  return destOps;
-}
-
-std::vector<UnserializedLoadStoreMetaData>
+/// \brief: Visit all the instructions in an LLVM IR and extract the dependency
+/// information from all load and store operations.
+std::vector<MemoryDependency>
 retriveLoadStoreAnalysisDataFromMetaData(Function &f) {
-  std::vector<UnserializedLoadStoreMetaData> items;
+  std::vector<MemoryDependency> items;
 
   for (llvm::BasicBlock &bb : f) {
     for (llvm::Instruction &instr : bb) {
       if (llvm::LoadInst *loadInstr = llvm::dyn_cast<llvm::LoadInst>(&instr)) {
-        UnserializedLoadStoreMetaData item;
-        item.llvmInstr = &instr;
-        item.name = getMemId(loadInstr);
-        item.destinations = getDestOps(loadInstr);
-        items.push_back(item);
+        std::optional<MemoryDependency> dep =
+            MemoryDependency::unserializeFromInstruction(loadInstr);
+        if (dep.has_value()) {
+          items.push_back(dep.value());
+        }
       } else if (llvm::StoreInst *storeInstr =
                      llvm::dyn_cast<llvm::StoreInst>(&instr)) {
-        UnserializedLoadStoreMetaData item;
-        item.llvmInstr = &instr;
-        item.name = getMemId(storeInstr);
-        item.destinations = getDestOps(storeInstr);
-        items.push_back(item);
+        std::optional<MemoryDependency> dep =
+            MemoryDependency::unserializeFromInstruction(storeInstr);
+        if (dep.has_value()) {
+          items.push_back(dep.value());
+        }
       }
     }
   }
-
   return items;
 }
 
-LogicalResult nameAndMarkDependencyEdges(
-    LLVM::LLVMFuncOp funcOp,
-    std::vector<UnserializedLoadStoreMetaData> loadStoreData,
-    OpBuilder &builder) {
+/// \brief: performs two actions:
+// - Propagate the unique handshake names for loads and stores from LLVM IR to
+// MLIR.
+// - mark the RAW and WAW dependency specified by MemoryDependency on all memory
+// operations.
+LogicalResult markMemoryDependency(LLVM::LLVMFuncOp funcOp,
+                                   std::vector<MemoryDependency> loadStoreData,
+                                   OpBuilder &builder, MLIRContext &ctx) {
 
   // Following the visiting order in the funcOp, collect all the load store ops.
   std::vector<Operation *> loadStoreOperations;
@@ -159,7 +122,7 @@ LogicalResult nameAndMarkDependencyEdges(
   }
 
   // NOTE: we should definitely add more sanity checks in this pass.
-  if (loadStoreData.size() == loadStoreOperations.size()) {
+  if (loadStoreData.size() != loadStoreOperations.size()) {
     funcOp.emitError("The number of loads and stores in the MLIR LLVM dialect "
                      "does not match the number in the LLVM IR!");
     return failure();
@@ -169,29 +132,21 @@ LogicalResult nameAndMarkDependencyEdges(
     // Assign the operations using the natual handshake names. TODO: maybe we
     // separate the naming for loads and stores?
     std::string opName = data.name;
-
+    SmallVector<dynamatic::handshake::MemDependenceAttr> deps =
+        data.toMemDependenceAttr(ctx);
     op->setAttr(StringRef(NameAnalysis::ATTR_NAME),
                 builder.getStringAttr(opName));
-
-    std::vector<StringRef> destNames;
-
-    destNames.reserve(data.destinations.size());
-    for (auto id : data.destinations) {
-      destNames.emplace_back(id);
+    if (!deps.empty()) {
+      setDialectAttr<dynamatic::handshake::MemDependenceArrayAttr>(op, &ctx,
+                                                                   deps);
     }
-
-    op->setAttr(StringRef("mem.dest"),
-                builder.getStrArrayAttr(ArrayRef(destNames)));
   }
-
   return success();
 }
 
 void LLVMMetadataToAttributePass::runOnOperation() {
-
   LLVMContext llvmCtx;
   SMDiagnostic err;
-
   std::unique_ptr<Module> llvmModule =
       parseAssemblyFile(StringRef(llvmir), err, llvmCtx);
   if (!llvmModule) {
@@ -199,7 +154,7 @@ void LLVMMetadataToAttributePass::runOnOperation() {
     signalPassFailure();
   }
 
-  std::map<std::string, std::vector<UnserializedLoadStoreMetaData>> data;
+  std::map<std::string, std::vector<MemoryDependency>> data;
   for (Function &f : llvmModule->functions()) {
     data.emplace(f.getName(), retriveLoadStoreAnalysisDataFromMetaData(f));
   }
@@ -208,15 +163,15 @@ void LLVMMetadataToAttributePass::runOnOperation() {
   ModuleOp modOp = llvm::dyn_cast<ModuleOp>(getOperation());
   OpBuilder builder(ctx);
 
-  // note:
-  // - llvm::make_early_inc_range: safety iterate through an iterator when there
-  // might be changes to them.
   for (auto func : modOp.getOps<LLVM::LLVMFuncOp>()) {
     assert(func->use_empty());
     auto loadStoreData = data[func.getName().str()];
-    if (failed(nameAndMarkDependencyEdges(func, loadStoreData, builder))) {
-      func.emitError("Failed to name memory operations!");
+    if (failed(markMemoryDependency(func, loadStoreData, builder, *ctx))) {
+      llvm::errs()
+          << "Failed to name memory operations and mark dependency edges!\n";
       signalPassFailure();
     }
   }
 }
+
+} // namespace
