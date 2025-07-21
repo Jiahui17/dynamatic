@@ -222,10 +222,18 @@ struct InternalMemLoweringState {
 
   handshake::PortNamer portNames;
 
+  /// Needed because we use the class as a value type in a map, which needs to
+  /// be default-constructible.
+  InternalMemLoweringState()
+      : allocaOp(nullptr), memInterface(nullptr), ports(nullptr),
+        portNames(nullptr) {
+    llvm_unreachable("object should never be default-constructed");
+  }
+
   InternalMemLoweringState(memref::AllocaOp allocaOp,
                            handshake::MemoryOpInterface memInterface)
-      : allocaOp(allocaOp), memInterface(memInterface), ports(memInterface),
-        portNames(memInterface){};
+      : allocaOp(allocaOp), memInterface(memInterface),
+        ports(getMemoryPorts(memInterface)), portNames(memInterface){};
 };
 
 /// Summarizes information to convert a Handshake function into a
@@ -707,6 +715,12 @@ ModuleDiscriminator::ModuleDiscriminator(Operation *op) {
       .Case<handshake::ReadyRemoverOp, handshake::ValidMergerOp>([&](auto) {
         // No parameters needed for these operations
       })
+      .Case<memref::AllocaOp>([&](memref::AllocaOp allocaOp) {
+        // No parameters needed for these operations
+        addUnsigned("DATA_WIDTH",
+                    allocaOp.getMemref().getType().getElementTypeBitWidth());
+        addUnsigned("SIZE", allocaOp.getMemref().getType().getNumElements());
+      })
       .Default([&](auto) {
         op->emitError() << "This operation cannot be lowered to RTL "
                            "due to a lack of an RTL implementation for it.";
@@ -734,6 +748,7 @@ ModuleDiscriminator::ModuleDiscriminator(FuncMemoryPorts &ports) {
       .Case<handshake::MemoryControllerOp>([&](auto) {
         // There can be at most one of those, and it is a load/store port
         unsigned lsqPort = ports.getNumPorts<LSQLoadStorePort>();
+
         Type dataType = IntegerType::get(ctx, ports.dataWidth);
         Type addrType = IntegerType::get(ctx, ports.addrWidth);
 
@@ -946,6 +961,37 @@ public:
       backedge.setValue(res);
     return instOp;
   }
+
+  hw::InstanceOp
+  convertToInstance(InternalMemLoweringState &state,
+                    ConversionPatternRewriter &rewriter,
+                    SmallVector<Backedge> &memInterfaceToBRAMChannels) {
+    handshake::MemoryOpInterface memOp = state.memInterface;
+
+    llvm::errs() << "Memref: " << state.memInterface->getName();
+    llvm::errs() << " data width: " << state.ports.dataWidth;
+    llvm::errs() << " address width: " << state.ports.addrWidth << "\n";
+
+    ModuleDiscriminator discriminator(state.ports);
+    StringRef name = getUniqueName(memOp);
+    Location loc = memOp.getLoc();
+    hw::InstanceOp instOp = createInstance(discriminator, name, loc, rewriter);
+    if (!instOp)
+      return nullptr;
+
+    assert(instOp->getNumResults() - memOp->getNumResults() ==
+           memInterfaceToBRAMChannels.size());
+    size_t numResults = memOp->getNumResults();
+    rewriter.replaceOp(memOp, instOp->getResults().take_front(numResults));
+
+    // Resolve backedges in the module's terminator that are coming from the
+    // memory interface
+    ValueRange toModOutput = instOp->getResults().drop_front(numResults);
+    for (auto [backedge, res] :
+         llvm::zip_equal(memInterfaceToBRAMChannels, toModOutput))
+      backedge.setValue(res);
+    return instOp;
+  }
 };
 } // namespace
 
@@ -1146,7 +1192,7 @@ ConvertFunc::matchAndRewrite(handshake::FuncOp funcOp, OpAdaptor adaptor,
     for (auto memInterface : funcOp.getOps<handshake::MemoryOpInterface>()) {
       if (allocaOp.getMemref() == memInterface.getMemRef()) {
         InternalMemLoweringState memLowingState(allocaOp, memInterface);
-        state.internalMemInterfaces[memInterface] = memLowingState;
+        state.internalMemInterfaces.insert({memInterface, memLowingState});
       }
     }
   }
@@ -1400,23 +1446,30 @@ LogicalResult ConvertMemInterfaceForIntenalArray::matchAndRewrite(
   // This signal feeds the memory op interface.
   bramBuilder.addClkAndRst(parentModOp);
 
+  // These backedges are passed to the convertToInstance to resolve the missing
+  // drivers
+  SmallVector<Backedge> memInterfaceToBRAMChannels = {loadEn, loadAddr, storeEn,
+                                                      storeAddr, storeData};
+
   // Query the parameters of allocaOp (used to generate external module op).
   ModuleDiscriminator bramDiscriminator(memState.allocaOp);
 
-  // TODO: the instName should be unique?
-  auto bramInstanceOp = bramBuilder.createInstance(bramDiscriminator, "bram",
-                                                   memOp->getLoc(), rewriter);
+  auto bramInstanceOp = bramBuilder.createInstance(
+      bramDiscriminator, getUniqueName(memState.allocaOp), memOp->getLoc(),
+      rewriter);
 
-  HWBuilder memInterfaceConverter(getContext());
+  HWMemConverter memInterfaceConverter(getContext());
 
   // Create new input connections that are not present in the handshake op (in
   // this case, only the load data). NOTE: not needed if we have LSQ -> MC
   memInterfaceConverter.addInput("loadData", bramInstanceOp.getResult(0));
 
   // Add the ports from handshake op (here we use the port namer to name the
-  // ports that are directly converted from handshake op):
+  // ports that are directly converted from handshake op), except for the memref
+  // type.
   for (auto [i, oprd] : llvm::enumerate(operands)) {
-    memInterfaceConverter.addInput(memState.portNames.getInputName(i), oprd);
+    if (!isa<MemRefType>(oprd.getType()))
+      memInterfaceConverter.addInput(memState.portNames.getInputName(i), oprd);
   }
   memInterfaceConverter.addClkAndRst(parentModOp);
 
@@ -1433,9 +1486,10 @@ LogicalResult ConvertMemInterfaceForIntenalArray::matchAndRewrite(
   memInterfaceConverter.addOutput("storeEn", i1Type);
   memInterfaceConverter.addOutput("storeAddr", addrType);
   memInterfaceConverter.addOutput("storeData", dataType);
-  // hw::InstanceOp instOp = memInterfaceConverter.convertToInstance(memState,
-  // rewriter);
+  hw::InstanceOp instOp = memInterfaceConverter.convertToInstance(
+      memState, rewriter, memInterfaceToBRAMChannels);
 
+  rewriter.eraseOp(memState.allocaOp);
   return success();
 }
 
@@ -1972,8 +2026,9 @@ public:
 
     // Create pattern set
     RewritePatternSet patterns(ctx);
-    patterns.insert<ConvertFunc, ConvertMemInterface>(typeConverter, ctx,
-                                                      lowerState);
+    patterns.insert<ConvertFunc, ConvertMemInterface,
+                    ConvertMemInterfaceForIntenalArray>(typeConverter, ctx,
+                                                        lowerState);
     patterns.insert<ConvertInstance, ConvertToHWInstance<handshake::BufferOp>,
                     ConvertToHWInstance<handshake::NDWireOp>,
                     ConvertToHWInstance<handshake::ConditionalBranchOp>,
