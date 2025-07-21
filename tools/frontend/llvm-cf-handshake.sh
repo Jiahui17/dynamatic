@@ -148,3 +148,7 @@ $DYNAMATIC_BINS/dynamatic-opt \
   $OUT/handshake_export.mlir \
   --lower-handshake-to-hw \
   > $OUT/hw.mlir
+
+"$DYNAMATIC_BINS/export-rtl" \
+  "$OUT/hw.mlir" "$OUT/hdl" "$DYNAMATIC_PATH/data/rtl-config-vhdl.json" \
+  --dynamatic-path "$DYNAMATIC_PATH" --hdl vhdl
