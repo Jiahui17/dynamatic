@@ -31,7 +31,7 @@ begin
   begin
     if (rising_edge(clk)) then
       if (loadEn = '1') then
-        loadData <= mem(to_integer(unsigned(loadAddr)));
+        loadData <= ram(to_integer(unsigned(loadAddr)));
       end if;
     end if;
   end process;
@@ -40,7 +40,7 @@ begin
   begin
     if (rising_edge(clk)) then
       if (storeEn = '1') then
-        mem(to_integer(unsigned(storeAddr))) <= storeData;
+        ram(to_integer(unsigned(storeAddr))) <= storeData;
       end if;
     end if;
   end process;
