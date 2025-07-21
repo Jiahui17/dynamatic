@@ -371,6 +371,8 @@ public:
   /// specialized for memory interfaces, passed through their port information.
   ModuleDiscriminator(FuncMemoryPorts &ports);
 
+  ModuleDiscriminator(memref::AllocaOp *op, FuncMemoryPorts &ports);
+
   /// Returns the unique external module name for the operation. Two operations
   /// with different parameter values will never receive the same name.
   std::string getDiscriminatedModName() {
@@ -825,6 +827,14 @@ ModuleDiscriminator::ModuleDiscriminator(FuncMemoryPorts &ports) {
         op->emitError() << "Unsupported memory interface type.";
         unsupported = true;
       });
+}
+
+ModuleDiscriminator::ModuleDiscriminator(memref::AllocaOp *op,
+                                         FuncMemoryPorts &ports) {
+  init(op->getOperation());
+  addUnsigned("DATA_WIDTH", ports.dataWidth);
+  addUnsigned("ADDR_WIDTH", ports.addrWidth);
+  addUnsigned("SIZE", op->getMemref().getType().getNumElements());
 }
 
 void ModuleDiscriminator::setParameters(hw::HWModuleExternOp modOp) {
@@ -1452,7 +1462,7 @@ LogicalResult ConvertMemInterfaceForIntenalArray::matchAndRewrite(
                                                       storeAddr, storeData};
 
   // Query the parameters of allocaOp (used to generate external module op).
-  ModuleDiscriminator bramDiscriminator(memState.allocaOp);
+  ModuleDiscriminator bramDiscriminator(&memState.allocaOp, memState.ports);
 
   auto bramInstanceOp = bramBuilder.createInstance(
       bramDiscriminator, getUniqueName(memState.allocaOp), memOp->getLoc(),
