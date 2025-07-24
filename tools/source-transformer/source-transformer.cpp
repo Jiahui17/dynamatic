@@ -22,10 +22,14 @@
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Signals.h"
 #include "llvm/Support/raw_ostream.h"
+#include <optional>
 #include <regex>
 #include <sstream>
 #include <string>
+
+#include "PragmaHandler.h"
 
 using namespace clang;
 using namespace llvm;
@@ -58,9 +62,11 @@ const std::string INCREMENT_VAR = "increment-var";
 
 class SimpleLoopUnroller : public MatchFinder::MatchCallback {
   Rewriter &rewrite;
+  LabelToPragmaMap &pragmas;
 
 public:
-  SimpleLoopUnroller(Rewriter &r) : rewrite(r) {}
+  SimpleLoopUnroller(Rewriter &r, LabelToPragmaMap &pragmas)
+      : rewrite(r), pragmas(pragmas) {}
   void registerSimpleLoopUnrollingRewrite(MatchFinder &finder) {
     // clang-format off
     // Matches "for (i=0; ....)""
@@ -128,6 +134,26 @@ public:
     return llvm::join(bodyBlocks, "\n");
   }
 
+  std::optional<std::string> getLoopLabel(const ForStmt *fs,
+                                          ASTContext *context) {
+
+    auto parents = context->getParents(*fs);
+    if (parents.empty()) {
+      // no parent available
+      return std::nullopt;
+    }
+
+    const Stmt *parentStmt = parents[0].get<Stmt>();
+    if (!parentStmt)
+      return std::nullopt;
+
+    if (const LabelStmt *ls = llvm::dyn_cast<LabelStmt>(parentStmt)) {
+
+      return ls->getName();
+    }
+    return std::nullopt;
+  }
+
   void run(const MatchFinder::MatchResult &result) override {
     if (const ForStmt *fs = result.Nodes.getNodeAs<clang::ForStmt>(FOR_LOOP)) {
       // fs->dump();
@@ -153,12 +179,20 @@ public:
         return;
       }
 
-      auto declName = decl->getDeclName();
+      auto declName = decl->getDeclName().getAsString();
+
+      auto label = getLoopLabel(fs, result.Context);
+
+      if (!label)
+        return;
+
+      if (!pragmas.count(label.value()))
+        return;
 
       llvm::errs() << "Name of the stuff: " << declName << "\n";
 
-      std::string newBodyText =
-          getUnrolledLoopBody(bodyText, 3, declName.getAsString(), 1);
+      std::string newBodyText = getUnrolledLoopBody(
+          bodyText, pragmas[label.value()].factor, declName, 1);
       StringRef replacedRef(newBodyText);
       llvm::errs() << newBodyText << "\n";
 
@@ -173,6 +207,11 @@ public:
 };
 
 class MyFrontendAction : public ASTFrontendAction {
+  Rewriter rewriter;
+  LabelToPragmaMap pragmas;
+  SimpleLoopUnroller callback{rewriter, pragmas};
+  MatchFinder finder;
+
 public:
   void EndSourceFileAction() override {
     SourceManager &sourceMgr = rewriter.getSourceMgr();
@@ -182,17 +221,15 @@ public:
 
   std::unique_ptr<ASTConsumer>
   CreateASTConsumer(CompilerInstance &ci, StringRef inputFileName) override {
+    // Install the pragma handler
+    ci.getPreprocessor().AddPragmaHandler(
+        new UnrollPragmaHandler(pragmas, rewriter));
     rewriter.setSourceMgr(ci.getSourceManager(), ci.getLangOpts());
 
     callback.registerSimpleLoopUnrollingRewrite(finder);
 
     return finder.newASTConsumer();
   }
-
-private:
-  Rewriter rewriter;
-  SimpleLoopUnroller callback{rewriter};
-  MatchFinder finder;
 };
 
 // Apply a custom category to all command-line options so that they are the
@@ -208,6 +245,8 @@ static cl::extrahelp commonHelp(CommonOptionsParser::HelpMessage);
 static cl::extrahelp moreHelp("\nMore help text...\n");
 
 int main(int argc, const char **argv) {
+  llvm::sys::PrintStackTraceOnErrorSignal(argv[0]); // <--- this is key
+
   auto expectedParser = CommonOptionsParser::create(argc, argv, myToolCategory);
   if (!expectedParser) {
     // Fail gracefully for unsupported options.

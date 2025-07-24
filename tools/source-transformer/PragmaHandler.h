@@ -11,6 +11,7 @@
 // Declares llvm::cl::extrahelp.
 #include "clang/Lex/Pragma.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Support/raw_ostream.h"
@@ -32,16 +33,20 @@ inline std::optional<int> strToInt(const std::string &str) {
 }
 
 struct UnrollPragmaInfo {
-  std::string identifier;
   unsigned factor;
 };
 
+using LabelToPragmaMap = std::map<std::string, UnrollPragmaInfo>;
+
 class UnrollPragmaHandler : public PragmaHandler {
-  std::vector<UnrollPragmaInfo> &pragmaInfo;
+  LabelToPragmaMap &pragmaInfo;
+
+  Rewriter &rewriter;
 
 public:
-  UnrollPragmaHandler(std::vector<UnrollPragmaInfo> &pragmaInfo)
-      : PragmaHandler("HLS_UNROLL"), pragmaInfo(pragmaInfo) {}
+  UnrollPragmaHandler(LabelToPragmaMap &pragmaInfo, Rewriter &rewriter)
+      : PragmaHandler("HLS_UNROLL"), pragmaInfo(pragmaInfo),
+        rewriter(rewriter) {}
 
   void HandlePragma(Preprocessor &pp, PragmaIntroducer introducer,
                     Token &firstToken) override {
@@ -52,6 +57,7 @@ public:
       pp.Diag(tok.getLocation(), diag::err_expected) << "expected 'identifier'";
       return;
     }
+    SourceLocation beginLoc = tok.getLocation();
 
     std::string identifier = pp.getSpelling(tok);
 
@@ -86,8 +92,12 @@ public:
       pp.Diag(tok.getLocation(), diag::err_invalid_numeric_udl);
       return;
     }
+    SourceLocation endLoc = tok.getEndLoc();
 
-    UnrollPragmaInfo info{identifier, (unsigned)factor.value()};
-    pragmaInfo.push_back(info);
+    llvm::errs() << "Pragma " << factor << "\n";
+    UnrollPragmaInfo info{(unsigned)factor.value()};
+    pragmaInfo[identifier] = info;
+
+    rewriter.RemoveText(SourceRange(firstToken.getLocation(), endLoc));
   }
 };
