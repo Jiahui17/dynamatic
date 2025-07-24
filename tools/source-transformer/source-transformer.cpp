@@ -1,6 +1,7 @@
 // Declares clang::SyntaxOnlyAction.
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/DeclBase.h"
 #include "clang/AST/Stmt.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/SourceLocation.h"
@@ -16,12 +17,15 @@
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/Format/Format.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
+#include <regex>
 #include <sstream>
+#include <string>
 
 using namespace clang;
 using namespace llvm;
@@ -50,6 +54,7 @@ std::string formatCode(llvm::StringRef code) {
 
 const std::string BOUND_VALUE = "constant-bound-value";
 const std::string FOR_LOOP = "simple-for-loop";
+const std::string INCREMENT_VAR = "increment-var";
 
 class SimpleLoopUnroller : public MatchFinder::MatchCallback {
   Rewriter &rewrite;
@@ -57,13 +62,10 @@ class SimpleLoopUnroller : public MatchFinder::MatchCallback {
 public:
   SimpleLoopUnroller(Rewriter &r) : rewrite(r) {}
   void registerSimpleLoopUnrollingRewrite(MatchFinder &finder) {
-
     // clang-format off
     // Matches "for (i=0; ....)""
-
     // auto isUnsignedDecl = varDecl(hasType(isUnsignedInteger()), hasInitializer(integerLiteral(equals(0))));
-    auto isUnsignedDecl = varDecl(hasType(isUnsignedInteger()));
-
+    auto isUnsignedDecl = varDecl(hasType(isUnsignedInteger())).bind(INCREMENT_VAR);
     auto zeroInit = hasLoopInit(declStmt(hasSingleDecl(isUnsignedDecl)));
 
     // Matches "for (...; var < const_int; ...)"
@@ -79,7 +81,8 @@ public:
       hasUnaryOperand(declRefExpr(to(varDecl(hasType(isUnsignedInteger())).bind("incrementVariable"))))));
     // clang-format on
 
-    StatementMatcher loopMatcher = forStmt(constCompare).bind(FOR_LOOP);
+    StatementMatcher loopMatcher =
+        forStmt(zeroInit, constCompare, incrementConstraint).bind(FOR_LOOP);
 
     finder.addMatcher(loopMatcher, this);
   }
@@ -88,19 +91,41 @@ public:
                                ASTContext *context) {
     const auto *loopBody = fs->getBody();
     if (auto const *compound = llvm::dyn_cast<CompoundStmt>(loopBody)) {
-      // return SourceRange( compound->body_front()->getBeginLoc(),
-      //     Lexer::getLocForEndOfToken(compound->body_back()->getEndLoc(), 0,
-      //                                smgr, options));
       SourceLocation begin = compound->body_front()->getBeginLoc();
       SourceLocation end = compound->body_back()->getEndLoc();
-      compound->dumpPretty(*context);
       auto range = SourceRange(begin, end);
-
-      auto actualEnd = Lexer::findLocationAfterToken(
-          end, tok::TokenKind::semi, smgr, context->getLangOpts(), true);
+      // NOTE: this is a quirk in Clang LibTooling. compound->body_back() skips
+      // the trailing ";" token
+      auto actualEnd =
+          Lexer::findLocationAfterToken(end, tok::TokenKind::semi /* ";" */,
+                                        smgr, context->getLangOpts(), true);
+      if (actualEnd.isInvalid())
+        return SourceRange(begin, end);
       return SourceRange(begin, actualEnd);
     }
     return loopBody->getSourceRange();
+  }
+
+  std::string getUnrolledLoopBody(const std::string &originalLoopBody,
+                                  unsigned factor,
+                                  const std::string &incrementVariable,
+                                  int incrementValue) {
+    SmallVector<std::string> bodyBlocks;
+    std::string patternLeft = R"DELIM((^|[^a-zA-Z0-9_]))DELIM";
+    std::string patternRight = R"DELIM((^|[^a-zA-Z0-9_]))DELIM";
+    std::regex replacePattern(patternLeft + incrementVariable + patternRight);
+    for (unsigned i = 0; i < factor; ++i) {
+
+      std::string newBody =
+          std::regex_replace(originalLoopBody, replacePattern,
+                             "$1" + incrementVariable + " + " +
+                                 std::to_string(i * incrementValue) + "$2");
+
+      bodyBlocks.push_back(newBody);
+    }
+    bodyBlocks.push_back(incrementVariable +
+                         "+=" + std::to_string(factor * incrementValue) + ";");
+    return llvm::join(bodyBlocks, "\n");
   }
 
   void run(const MatchFinder::MatchResult &result) override {
@@ -113,26 +138,36 @@ public:
           return;
         }
       }
+
       SourceManager &sm = *result.SourceManager;
       LangOptions options = result.Context->getLangOpts();
-      // SourceRange range(
-      //     loopBody->getBeginLoc(),
-      //     Lexer::getLocForEndOfToken(loopBody->getEndLoc(), 0, sm,
-      //                                result.Context->getLangOpts()));
 
       auto range = getLoopBodyRange(fs, sm, result.Context);
 
       auto bodyText = Lexer::getSourceText(
                           CharSourceRange::getTokenRange(range), sm, options)
                           .str();
+      // Get the increment variable:
+      const auto *decl = result.Nodes.getNodeAs<clang::VarDecl>(INCREMENT_VAR);
+      if (!decl) {
+        return;
+      }
 
-      llvm::errs() << "New loop body!\n";
-      std::string newBodyText = bodyText + "\n" + bodyText + "\n" + bodyText;
+      auto declName = decl->getDeclName();
+
+      llvm::errs() << "Name of the stuff: " << declName << "\n";
+
+      std::string newBodyText =
+          getUnrolledLoopBody(bodyText, 3, declName.getAsString(), 1);
       StringRef replacedRef(newBodyText);
       llvm::errs() << newBodyText << "\n";
 
       // rewrite.ReplaceText(CharSourceRange::getTokenRange(range), bodyText);
       rewrite.ReplaceText(range, replacedRef);
+
+      auto rangeIncrement = fs->getInc()->getSourceRange();
+
+      rewrite.ReplaceText(rangeIncrement, "");
     }
   }
 };
