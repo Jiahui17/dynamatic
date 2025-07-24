@@ -57,7 +57,6 @@ public:
       pp.Diag(tok.getLocation(), diag::err_expected) << "expected 'identifier'";
       return;
     }
-    SourceLocation beginLoc = tok.getLocation();
 
     std::string identifier = pp.getSpelling(tok);
 

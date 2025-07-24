@@ -2,6 +2,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclBase.h"
+#include "clang/AST/Expr.h"
 #include "clang/AST/Stmt.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/SourceLocation.h"
@@ -69,7 +70,7 @@ public:
       : rewrite(r), pragmas(pragmas) {}
   void registerSimpleLoopUnrollingRewrite(MatchFinder &finder) {
     // clang-format off
-    // Matches "for (i=0; ....)""
+    // Matches "for (unsigned i=0; ....)""
     // auto isUnsignedDecl = varDecl(hasType(isUnsignedInteger()), hasInitializer(integerLiteral(equals(0))));
     auto isUnsignedDecl = varDecl(hasType(isUnsignedInteger())).bind(INCREMENT_VAR);
     auto zeroInit = hasLoopInit(declStmt(hasSingleDecl(isUnsignedDecl)));
@@ -84,7 +85,7 @@ public:
                     );
     auto incrementConstraint = hasIncrement(unaryOperator(
       hasOperatorName("++"),
-      hasUnaryOperand(declRefExpr(to(varDecl(hasType(isUnsignedInteger())).bind("incrementVariable"))))));
+      hasUnaryOperand(declRefExpr(to(varDecl(hasType(isUnsignedInteger())))))));
     // clang-format on
 
     StatementMatcher loopMatcher =
@@ -129,8 +130,6 @@ public:
 
       bodyBlocks.push_back(newBody);
     }
-    bodyBlocks.push_back(incrementVariable +
-                         "+=" + std::to_string(factor * incrementValue) + ";");
     return llvm::join(bodyBlocks, "\n");
   }
 
@@ -189,19 +188,29 @@ public:
       if (!pragmas.count(label.value()))
         return;
 
-      llvm::errs() << "Name of the stuff: " << declName << "\n";
+      auto unrollFactor = pragmas[label.value()].factor;
 
-      std::string newBodyText = getUnrolledLoopBody(
-          bodyText, pragmas[label.value()].factor, declName, 1);
+      if (const IntegerLiteral *it =
+              result.Nodes.getNodeAs<IntegerLiteral>(BOUND_VALUE)) {
+        int64_t sval = it->getValue().getSExtValue();
+        if (sval % unrollFactor != 0) {
+          llvm::errs() << "Warning - the loop bound is not a perfect multiple "
+                          "of the unroll factor!";
+          return;
+        }
+      }
+
+      std::string newBodyText =
+          getUnrolledLoopBody(bodyText, unrollFactor, declName, 1);
+
       StringRef replacedRef(newBodyText);
-      llvm::errs() << newBodyText << "\n";
 
       // rewrite.ReplaceText(CharSourceRange::getTokenRange(range), bodyText);
       rewrite.ReplaceText(range, replacedRef);
 
       auto rangeIncrement = fs->getInc()->getSourceRange();
-
-      rewrite.ReplaceText(rangeIncrement, "");
+      rewrite.ReplaceText(rangeIncrement,
+                          declName + " += " + std::to_string(unrollFactor));
     }
   }
 };
