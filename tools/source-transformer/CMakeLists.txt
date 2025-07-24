@@ -11,6 +11,9 @@ target_link_libraries(source-transformer
   clangFrontend
   clangSerialization
   clangTooling
+  clangToolingCore
   LLVMFrontendOpenMP
   clangRewrite
+  clangLex
+  clangFormat
 )
